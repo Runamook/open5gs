@@ -46,11 +46,10 @@ typedef struct scp_assoc_s {
     ogs_pool_id_t stream_id;
 
     ogs_sbi_client_t *client;
-    ogs_sbi_client_t *nrf_client;
 
     ogs_sbi_request_t *request;
 
-    ogs_sbi_service_type_e service_type;
+    OpenAPI_service_name_e service_name;
 
     OpenAPI_nf_type_e target_nf_type;
     OpenAPI_nf_type_e requester_nf_type;

@@ -32,7 +32,8 @@ ogs_sbi_request_t *smf_nudm_sdm_build_get(smf_sess_t *sess, void *data)
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_GET;
-    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_SDM;
+    message.h.service.name =
+        OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_sdm);
     message.h.api.version = (char *)OGS_SBI_API_V2;
     message.h.resource.component[0] = smf_ue->supi;
     message.h.resource.component[1] = data;
@@ -42,7 +43,7 @@ ogs_sbi_request_t *smf_nudm_sdm_build_get(smf_sess_t *sess, void *data)
             sizeof(message.param.s_nssai));
 
     message.param.plmn_id_presence = true;
-    memcpy(&message.param.plmn_id, &sess->home_plmn_id,
+    memcpy(&message.param.plmn_id, &sess->serving_plmn_id,
             sizeof(message.param.plmn_id));
 
     if (sess->session.name)
@@ -79,7 +80,8 @@ ogs_sbi_request_t *smf_nudm_uecm_build_registration(
     SmfRegistration.single_nssai = &single_nssai;
 
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_PUT;
-    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_UECM;
+    message.h.service.name =
+        OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_uecm);
     message.h.api.version = (char *)OGS_SBI_API_V1;
     message.h.resource.component[0] = smf_ue->supi;
     message.h.resource.component[1] =
@@ -134,7 +136,8 @@ ogs_sbi_request_t *smf_nudm_uecm_build_deregistration(
     memset(&message, 0, sizeof(message));
 
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_DELETE;
-    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_UECM;
+    message.h.service.name =
+        OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_uecm);
     message.h.api.version = (char *)OGS_SBI_API_V1;
     message.h.resource.component[0] = smf_ue->supi;
     message.h.resource.component[1] =
@@ -180,7 +183,8 @@ ogs_sbi_request_t *smf_nudm_sdm_build_subscription(
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
-    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_SDM;
+    message.h.service.name =
+        OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_sdm);
     message.h.api.version = (char *)OGS_SBI_API_V2;
     message.h.resource.component[0] = smf_ue->supi;
     message.h.resource.component[1] =
@@ -235,9 +239,6 @@ ogs_sbi_request_t *smf_nudm_sdm_build_subscription(
     SDMSubscription.single_nssai = &sNSSAI;
 
     message.SDMSubscription = &SDMSubscription;
-
-    message.http.custom.callback =
-        (char *)OGS_SBI_CALLBACK_NUDM_SDM_NOTIFICATION;
 
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);

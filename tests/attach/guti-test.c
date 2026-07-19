@@ -56,7 +56,7 @@ static void test1_func(abts_case *tc, void *data)
     ogs_assert(test_ue);
 
     test_ue->e_cgi.cell_id = 0x1079baf0;
-    test_ue->nas.ksi = 0;
+    test_ue->nas.ksi = OGS_NAS_KSI_NO_KEY_IS_AVAILABLE;
     test_ue->nas.value = OGS_NAS_ATTACH_TYPE_COMBINED_EPS_IMSI_ATTACH;
 
     test_ue->k_string = "465b5ce8b199b49faa5f0a2ee238a6bc";
@@ -648,23 +648,6 @@ static void test2_func(abts_case *tc, void *data)
     rv = testenb_s1ap_send(s1ap, sendbuf);
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
-#if SEND_UE_CONTEXT_RELEASE_COMMAND_IN_INTEGRITY_UNPROTECTED
-    /* Receive OLD UE Context Release Command */
-    enb_ue_s1ap_id = test_ue->enb_ue_s1ap_id;
-
-    recvbuf = testenb_s1ap_read(s1ap);
-    ABTS_PTR_NOTNULL(tc, recvbuf);
-    tests1ap_recv(test_ue, recvbuf);
-
-    /* Send OLD UE Context Release Complete */
-    sendbuf = test_s1ap_build_ue_context_release_complete(test_ue);
-    ABTS_PTR_NOTNULL(tc, sendbuf);
-    rv = testenb_s1ap_send(s1ap, sendbuf);
-    ABTS_INT_EQUAL(tc, OGS_OK, rv);
-
-    test_ue->enb_ue_s1ap_id = enb_ue_s1ap_id;
-#endif
-
     /* Receive Authentication request */
     recvbuf = testenb_s1ap_read(s1ap);
     ABTS_PTR_NOTNULL(tc, recvbuf);
@@ -692,7 +675,6 @@ static void test2_func(abts_case *tc, void *data)
     rv = testenb_s1ap_send(s1ap, sendbuf);
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
-#if SEND_UE_CONTEXT_RELEASE_COMMAND_IN_INTEGRITY_PROTECTED
     /* Receive OLD UE Context Release Command */
     enb_ue_s1ap_id = test_ue->enb_ue_s1ap_id;
 
@@ -707,7 +689,6 @@ static void test2_func(abts_case *tc, void *data)
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
     test_ue->enb_ue_s1ap_id = enb_ue_s1ap_id;
-#endif
 
     /* Receive ESM Information Request */
     recvbuf = testenb_s1ap_read(s1ap);
@@ -1065,7 +1046,7 @@ static void test3_func(abts_case *tc, void *data)
     test_ue->tau_request_param.ue_network_capability = 1;
     test_ue->tau_request_param.last_visited_registered_tai = 1;
     test_ue->tau_request_param.drx_parameter = 1;
-    test_ue->tau_request_param.eps_bearer_context_status = 1;
+    test_ue->tau_request_param.eps_bearer_context_status = 0x20; /* EBI:5 */
     test_ue->tau_request_param.ms_network_capability = 1;
     test_ue->tau_request_param.tmsi_status = 1;
     test_ue->tau_request_param.mobile_station_classmark_2 = 1;
@@ -1079,23 +1060,6 @@ static void test3_func(abts_case *tc, void *data)
     ABTS_PTR_NOTNULL(tc, sendbuf);
     rv = testenb_s1ap_send(s1ap, sendbuf);
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
-
-#if SEND_UE_CONTEXT_RELEASE_COMMAND_IN_INTEGRITY_UNPROTECTED
-    /* Receive OLD UE Context Release Command */
-    enb_ue_s1ap_id = test_ue->enb_ue_s1ap_id;
-
-    recvbuf = testenb_s1ap_read(s1ap);
-    ABTS_PTR_NOTNULL(tc, recvbuf);
-    tests1ap_recv(test_ue, recvbuf);
-
-    /* Send OLD UE Context Release Complete */
-    sendbuf = test_s1ap_build_ue_context_release_complete(test_ue);
-    ABTS_PTR_NOTNULL(tc, sendbuf);
-    rv = testenb_s1ap_send(s1ap, sendbuf);
-    ABTS_INT_EQUAL(tc, OGS_OK, rv);
-
-    test_ue->enb_ue_s1ap_id = enb_ue_s1ap_id;
-#endif
 
     /* Receive Authentication Request */
     recvbuf = testenb_s1ap_read(s1ap);
@@ -1124,7 +1088,6 @@ static void test3_func(abts_case *tc, void *data)
     rv = testenb_s1ap_send(s1ap, sendbuf);
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
-#if SEND_UE_CONTEXT_RELEASE_COMMAND_IN_INTEGRITY_PROTECTED
     /* Receive OLD UE Context Release Command */
     enb_ue_s1ap_id = test_ue->enb_ue_s1ap_id;
 
@@ -1139,7 +1102,6 @@ static void test3_func(abts_case *tc, void *data)
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
     test_ue->enb_ue_s1ap_id = enb_ue_s1ap_id;
-#endif
 
     /* Receive InitialContextSetupResponse + TAU Accept */
     recvbuf = testenb_s1ap_read(s1ap);
@@ -1165,7 +1127,7 @@ static void test3_func(abts_case *tc, void *data)
     test_ue->tau_request_param.ue_network_capability = 1;
     test_ue->tau_request_param.last_visited_registered_tai = 1;
     test_ue->tau_request_param.drx_parameter = 1;
-    test_ue->tau_request_param.eps_bearer_context_status = 1;
+    test_ue->tau_request_param.eps_bearer_context_status = 0x20; /* EBI:5 */
     test_ue->tau_request_param.ms_network_capability = 1;
     test_ue->tau_request_param.tmsi_status = 1;
     test_ue->tau_request_param.mobile_station_classmark_2 = 1;
@@ -1275,7 +1237,7 @@ static void test4_func(abts_case *tc, void *data)
     ogs_assert(test_ue);
 
     test_ue->e_cgi.cell_id = 0x64010;
-    test_ue->nas.ksi = 0;
+    test_ue->nas.ksi = OGS_NAS_KSI_NO_KEY_IS_AVAILABLE;
     test_ue->nas.value = OGS_NAS_ATTACH_TYPE_EPS_ATTACH;
 
     test_ue->k_string = "465b5ce8b199b49faa5f0a2ee238a6bc";
@@ -1423,23 +1385,6 @@ static void test4_func(abts_case *tc, void *data)
     rv = testenb_s1ap_send(s1ap, sendbuf);
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
-#if SEND_UE_CONTEXT_RELEASE_COMMAND_IN_INTEGRITY_UNPROTECTED
-    /* Receive OLD UE Context Release Command */
-    enb_ue_s1ap_id = test_ue->enb_ue_s1ap_id;
-
-    recvbuf = testenb_s1ap_read(s1ap);
-    ABTS_PTR_NOTNULL(tc, recvbuf);
-    tests1ap_recv(test_ue, recvbuf);
-
-    /* Send OLD UE Context Release Complete */
-    sendbuf = test_s1ap_build_ue_context_release_complete(test_ue);
-    ABTS_PTR_NOTNULL(tc, sendbuf);
-    rv = testenb_s1ap_send(s1ap, sendbuf);
-    ABTS_INT_EQUAL(tc, OGS_OK, rv);
-
-    test_ue->enb_ue_s1ap_id = enb_ue_s1ap_id;
-#endif
-
     /* Receive Authentication Request */
     recvbuf = testenb_s1ap_read(s1ap);
     ABTS_PTR_NOTNULL(tc, recvbuf);
@@ -1467,7 +1412,6 @@ static void test4_func(abts_case *tc, void *data)
     rv = testenb_s1ap_send(s1ap, sendbuf);
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
-#if SEND_UE_CONTEXT_RELEASE_COMMAND_IN_INTEGRITY_PROTECTED
     /* Receive OLD UE Context Release Command */
     enb_ue_s1ap_id = test_ue->enb_ue_s1ap_id;
 
@@ -1482,7 +1426,6 @@ static void test4_func(abts_case *tc, void *data)
     ABTS_INT_EQUAL(tc, OGS_OK, rv);
 
     test_ue->enb_ue_s1ap_id = enb_ue_s1ap_id;
-#endif
 
     /* Receive Initial Context Setup Request +
      * Attach Accept +

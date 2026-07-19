@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -39,6 +39,7 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
         ogs_nas_5gs_registration_request_t *registration_request)
 {
     int served_tai_index = 0;
+    int i;
     uint8_t gmm_cause;
 
     ran_ue_t *ran_ue = NULL;
@@ -130,12 +131,6 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
         return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
     }
 
-    if (mobile_identity->length < OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE) {
-        ogs_error("The length of Mobile Identity(%d) is less then the min(%d)",
-            mobile_identity->length, OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE);
-        return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
-    }
-
     mobile_identity_header =
             (ogs_nas_5gs_mobile_identity_header_t *)mobile_identity->buffer;
 
@@ -143,8 +138,17 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
 
     switch (mobile_identity_header->type) {
     case OGS_NAS_5GS_MOBILE_IDENTITY_SUCI:
+        if (mobile_identity->length <
+                (OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1)) {
+            ogs_error("Too short SUCI Mobile Identity [%d:%d]",
+                    mobile_identity->length,
+                    OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1);
+            return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
+        }
+
         mobile_identity_suci =
             (ogs_nas_5gs_mobile_identity_suci_t *)mobile_identity->buffer;
+        ogs_assert(mobile_identity_suci);
         if (mobile_identity_suci->h.supi_format !=
                 OGS_NAS_5GS_SUPI_FORMAT_IMSI) {
             ogs_error("Not implemented SUPI format [%d]",
@@ -164,6 +168,14 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
         ogs_nas_to_plmn_id(&amf_ue->home_plmn_id,
                 &mobile_identity_suci->nas_plmn_id);
 
+        for (i = 0; i < amf_self()->num_of_served_guami; i++) {
+            if (!memcmp(&amf_ue->home_plmn_id,
+                        &amf_self()->served_guami[i].plmn_id,
+                        sizeof(amf_ue->home_plmn_id))) {
+                amf_ue->guami = &amf_self()->served_guami[i];
+            }
+        }
+
         gmm_cause = gmm_cause_from_access_control(&amf_ue->home_plmn_id);
         if (gmm_cause != OGS_5GMM_CAUSE_REQUEST_ACCEPTED) {
             ogs_error("Rejected by PLMN-ID access control");
@@ -174,12 +186,17 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
         ogs_info("[%s]    SUCI", amf_ue->suci);
         break;
     case OGS_NAS_5GS_MOBILE_IDENTITY_GUTI:
-        mobile_identity_guti =
-            (ogs_nas_5gs_mobile_identity_guti_t *)mobile_identity->buffer;
-        if (!mobile_identity_guti) {
-            ogs_error("No mobile identity");
+        if (mobile_identity->length <
+                sizeof(ogs_nas_5gs_mobile_identity_guti_t)) {
+            ogs_error("Too short 5G-GUTI Mobile Identity [%d:%d]",
+                    mobile_identity->length,
+                    (int)sizeof(ogs_nas_5gs_mobile_identity_guti_t));
             return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
         }
+
+        mobile_identity_guti =
+            (ogs_nas_5gs_mobile_identity_guti_t *)mobile_identity->buffer;
+        ogs_assert(mobile_identity_guti);
 
         ogs_nas_5gs_mobile_identity_guti_to_nas_guti(
             mobile_identity_guti, &amf_ue->old_guti);
@@ -200,7 +217,20 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
             sizeof(ogs_nas_5gs_registration_type_t));
     amf_ue->nas.message_type = OGS_NAS_5GS_REGISTRATION_REQUEST;
 
-    if (registration_type->value == OGS_NAS_5GS_REGISTRATION_TYPE_INITIAL) {
+    /*
+     * TS 24.501 Table 9.11.3.7.1:
+     * Unused registration-type encodings shall be interpreted as
+     * "initial registration" by the network.
+     *
+     * Normalize here so subsequent transfer logic has a stable basis.
+     */
+    if (amf_ue->nas.registration.value == 0) {
+        ogs_error("Normalize reg_type[0] to INITIAL");
+        amf_ue->nas.registration.value = OGS_NAS_5GS_REGISTRATION_TYPE_INITIAL;
+    }
+
+    if (amf_ue->nas.registration.value ==
+            OGS_NAS_5GS_REGISTRATION_TYPE_INITIAL) {
         /*
          * Issue #2040
          *
@@ -475,9 +505,17 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_update(
 
         ogs_list_for_each(&amf_ue->sess_list, sess) {
             if ((psimask & (1 << sess->psi)) == 0) {
-                if (SESSION_CONTEXT_IN_SMF(sess))
+                if (SESSION_CONTEXT_IN_SMF(sess)) {
+                    amf_nsmf_pdusession_sm_context_param_t param;
+
+                    memset(&param, 0, sizeof(param));
+                    param.ue_location = true;
+                    param.ue_timezone = true;
+
                     amf_sbi_send_release_session(
-                        ran_ue, sess, AMF_RELEASE_SM_CONTEXT_REGISTRATION_ACCEPT);
+                        ran_ue, sess,
+                        AMF_RELEASE_SM_CONTEXT_REGISTRATION_ACCEPT, &param);
+                }
             }
         }
     }
@@ -562,24 +600,14 @@ bool gmm_registration_request_from_old_amf(amf_ue_t *amf_ue,
         return false;
     }
 
-    /*
-     * TODO : FIXME
-     *
-     * Typically, UEs send 5G-GUTIs with all 0. In such cases,
-     * we need to prevent context transfer betwen AMFs by the N14 interface
-     * because they are not included in served_guami.
-     *
-     * We don't yet know how to check for 5G GUTI conformance,
-     * so we've implemented the following as a temporary solution.
+    /* Robustness: many devices (and fuzzers) send a "placeholder" 5G-GUTI
+     * (AMF-ID zero + M-TMSI zero). Treat it as non-actionable for context
+     * transfer regardless of PLMN digits, and fall back to Identity Request /
+     * normal registration handling.
      */
-    if ((amf_ue->old_guti.amf_id.region == 0 &&
-         amf_ue->old_guti.amf_id.set2 == 0) &&
-        (amf_ue->old_guti.nas_plmn_id.mcc1 == 0 &&
-         amf_ue->old_guti.nas_plmn_id.mcc2 == 0 &&
-         amf_ue->old_guti.nas_plmn_id.mcc3 == 0) &&
-        (amf_ue->old_guti.nas_plmn_id.mnc1 == 0 &&
-         amf_ue->old_guti.nas_plmn_id.mnc2 == 0 &&
-         amf_ue->old_guti.nas_plmn_id.mnc3 == 0)) {
+    if (amf_ue->old_guti.amf_id.region == 0 &&
+        amf_ue->old_guti.amf_id.set2 == 0 &&
+        amf_ue->old_guti.m_tmsi == 0) {
         return false;
     }
 
@@ -799,9 +827,17 @@ ogs_nas_5gmm_cause_t gmm_handle_service_update(
 
         ogs_list_for_each(&amf_ue->sess_list, sess) {
             if ((psimask & (1 << sess->psi)) == 0) {
-                if (SESSION_CONTEXT_IN_SMF(sess))
+                if (SESSION_CONTEXT_IN_SMF(sess)) {
+                    amf_nsmf_pdusession_sm_context_param_t param;
+
+                    memset(&param, 0, sizeof(param));
+                    param.ue_location = true;
+                    param.ue_timezone = true;
+
                     amf_sbi_send_release_session(
-                        ran_ue, sess, AMF_RELEASE_SM_CONTEXT_SERVICE_ACCEPT);
+                        ran_ue, sess,
+                        AMF_RELEASE_SM_CONTEXT_SERVICE_ACCEPT, &param);
+                }
             }
         }
     }
@@ -849,6 +885,7 @@ int gmm_handle_deregistration_request(amf_ue_t *amf_ue,
     int r, state, xact_count = 0;
     ran_ue_t *ran_ue = NULL;
     ogs_nas_de_registration_type_t *de_registration_type = NULL;
+    amf_nsmf_pdusession_sm_context_param_t param;
 
     ogs_assert(amf_ue);
     ran_ue = ran_ue_find_by_id(amf_ue->ran_ue_id);
@@ -883,20 +920,29 @@ int gmm_handle_deregistration_request(amf_ue_t *amf_ue,
     xact_count = amf_sess_xact_count(amf_ue);
 
     state = AMF_UE_INITIATED_DE_REGISTERED;
-    amf_sbi_send_release_all_sessions(ran_ue, amf_ue, state);
+
+    memset(&param, 0, sizeof(param));
+    param.cause = OpenAPI_cause_REL_DUE_TO_UNSPECIFIED_REASON;
+    param.ngApCause.group = NGAP_Cause_PR_nas;
+    param.ngApCause.value = NGAP_CauseNas_deregister;
+    param.gmm_cause = OGS_5GMM_CAUSE_REQUEST_ACCEPTED;
+    param.ue_location = true;
+    param.ue_timezone = true;
+
+    amf_sbi_send_release_all_sessions(ran_ue, amf_ue, state, &param);
 
     if (!AMF_SESSION_RELEASE_PENDING(amf_ue) &&
         amf_sess_xact_count(amf_ue) == xact_count) {
         if (UDM_SDM_SUBSCRIBED(amf_ue)) {
             r = amf_ue_sbi_discover_and_send(
-                    OGS_SBI_SERVICE_TYPE_NUDM_SDM, NULL,
+                    OpenAPI_service_name_nudm_sdm, NULL,
                     amf_nudm_sdm_build_subscription_delete,
                     amf_ue, state, NULL);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
         } else if (PCF_AM_POLICY_ASSOCIATED(amf_ue)) {
             r = amf_ue_sbi_discover_and_send(
-                    OGS_SBI_SERVICE_TYPE_NPCF_AM_POLICY_CONTROL,
+                    OpenAPI_service_name_npcf_am_policy_control,
                     NULL,
                     amf_npcf_am_policy_control_build_delete,
                     amf_ue, state, NULL);
@@ -954,7 +1000,7 @@ int gmm_handle_authentication_response(amf_ue_t *amf_ue,
             authentication_response_parameter->length);
 
     r = amf_ue_sbi_discover_and_send(
-            OGS_SBI_SERVICE_TYPE_NAUSF_AUTH, NULL,
+            OpenAPI_service_name_nausf_auth, NULL,
             amf_nausf_auth_build_authenticate_confirmation, amf_ue, 0, NULL);
     ogs_expect(r == OGS_OK);
     ogs_assert(r != OGS_ERROR);
@@ -986,18 +1032,21 @@ ogs_nas_5gmm_cause_t gmm_handle_identity_response(amf_ue_t *amf_ue,
         return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
     }
 
-    if (mobile_identity->length < OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE) {
-        ogs_error("The length of Mobile Identity(%d) is less then the min(%d)",
-            mobile_identity->length, OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE);
-        return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
-    }
-
     mobile_identity_header =
             (ogs_nas_5gs_mobile_identity_header_t *)mobile_identity->buffer;
 
     if (mobile_identity_header->type == OGS_NAS_5GS_MOBILE_IDENTITY_SUCI) {
+        if (mobile_identity->length <
+                (OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1)) {
+            ogs_error("Too short SUCI Mobile Identity [%d:%d]",
+                    mobile_identity->length,
+                    OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1);
+            return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
+        }
+
         mobile_identity_suci =
             (ogs_nas_5gs_mobile_identity_suci_t *)mobile_identity->buffer;
+        ogs_assert(mobile_identity_suci);
         if (mobile_identity_suci->h.supi_format !=
                 OGS_NAS_5GS_SUPI_FORMAT_IMSI) {
             ogs_error("Not implemented SUPI format [%d]",
@@ -1131,11 +1180,11 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
     int r;
     ogs_slice_data_t *selected_slice = NULL;
     amf_sess_t *sess = NULL;
-    amf_nsmf_pdusession_sm_context_param_t param;
 
     ogs_nas_payload_container_type_t *payload_container_type = NULL;
     ogs_nas_payload_container_t *payload_container = NULL;
     ogs_nas_pdu_session_identity_2_t *pdu_session_id = NULL;
+    ogs_nas_request_type_t *request_type = NULL;
     ogs_nas_s_nssai_t *nas_s_nssai = NULL;
     ogs_nas_dnn_t *dnn = NULL;
     ogs_nas_5gsm_header_t *gsm_header = NULL;
@@ -1197,6 +1246,8 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
         return OGS_ERROR;
     }
 
+    request_type = &ul_nas_transport->request_type;
+
     switch (payload_container_type->value) {
     case OGS_NAS_PAYLOAD_CONTAINER_N1_SM_INFORMATION:
         gsm_header = (ogs_nas_5gsm_header_t *)payload_container->buffer;
@@ -1224,7 +1275,6 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
              */
                 sess->pdu_session_resource_release_response_received = false;
                 sess->pdu_session_release_complete_received = false;
-
             }
         } else {
             sess = amf_sess_find_by_psi(amf_ue, *pdu_session_id);
@@ -1238,6 +1288,8 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                 return OGS_ERROR;
             }
         }
+
+        sess->request_type = request_type->value;
 
         /*
          * To check if Reactivation Request has been used.
@@ -1287,6 +1339,12 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                         if (ie.sst == amf_ue->slice[i].s_nssai.sst &&
                             ie.sd.v == amf_ue->slice[i].s_nssai.sd.v) {
 
+                            if (ie.mapped_hplmn_sst_presence) {
+                                sess->mapped_hplmn_presence = true;
+                                sess->mapped_hplmn.sst = ie.mapped_hplmn_sst;
+                                sess->mapped_hplmn.sd.v = ie.mapped_hplmn_sd.v;
+                            }
+
                             /* PASS */
 
                         } else {
@@ -1308,7 +1366,6 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
 
                         if (ul_nas_transport->presencemask &
                                 OGS_NAS_5GS_UL_NAS_TRANSPORT_DNN_PRESENT) {
-
                             for (k = 0;
                                     k < amf_ue->slice[i].num_of_session; k++) {
                                 if (k >= OGS_MAX_NUM_OF_SESS) {
@@ -1329,13 +1386,15 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                                     sess->dnn = ogs_strdup(dnn->value);
                                     ogs_assert(sess->dnn);
 
+                                    sess->lbo_roaming_allowed =
+                                        amf_ue->slice[i].
+                                        session[k].lbo_roaming_allowed;
                                 } else {
                                     continue;
                                 }
                             }
 
                         } else {
-
                             selected_slice = amf_ue->slice + i;
                             ogs_assert(selected_slice);
 
@@ -1345,6 +1404,9 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                                 sess->dnn = ogs_strdup(
                                         selected_slice->session[0].name);
                                 ogs_assert(sess->dnn);
+                                sess->lbo_roaming_allowed =
+                                    amf_ue->slice[i].
+                                    session[0].lbo_roaming_allowed;
                             }
                         }
                     }
@@ -1352,8 +1414,8 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
             }
 
             if (!selected_slice || !sess->dnn) {
-                ogs_warn("[%s] DNN Not Supported OR "
-                            "Not Subscribed in the Slice", amf_ue->supi);
+                ogs_warn("[%s] Ue requested DNN \"%s\" Not Supported OR "
+                            "Not Subscribed in the Slice", amf_ue->supi, dnn->value);
                 r = nas_5gs_send_gmm_status(amf_ue,
                         OGS_5GMM_CAUSE_DNN_NOT_SUPPORTED_OR_NOT_SUBSCRIBED_IN_THE_SLICE);
                 ogs_expect(r == OGS_OK);
@@ -1365,77 +1427,230 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
             sess->s_nssai.sst = selected_slice->s_nssai.sst;
             sess->s_nssai.sd.v = selected_slice->s_nssai.sd.v;
 
-            ogs_info("UE SUPI[%s] DNN[%s] S_NSSAI[SST:%d SD:0x%x] "
+            ogs_info("UE SUPI[%s] DNN[%s] LBO[%d] S_NSSAI[SST:%d SD:0x%x] "
                     "smContextRef[%s] smContextResourceURI[%s]",
-                amf_ue->supi, sess->dnn, sess->s_nssai.sst, sess->s_nssai.sd.v,
-                sess->sm_context.ref ? sess->sm_context.ref : "NULL",
-                sess->sm_context.resource_uri ?
-                    sess->sm_context.resource_uri : "NULL");
+                amf_ue->supi, sess->dnn, sess->lbo_roaming_allowed,
+                sess->s_nssai.sst, sess->s_nssai.sd.v,
+                sess->sm_context_ref ? sess->sm_context_ref : "NULL",
+                sess->sm_context_resource_uri ?
+                    sess->sm_context_resource_uri : "NULL");
 
             if (!SESSION_CONTEXT_IN_SMF(sess)) {
-                ogs_sbi_nf_instance_t *nf_instance = NULL;
-                ogs_sbi_service_type_e service_type =
-                    OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION;
+                ogs_sbi_nf_instance_t *v_smf_instance = NULL;
+                ogs_sbi_nf_instance_t *h_smf_instance = NULL;
+                ogs_sbi_discovery_option_t *v_discovery_option = NULL;
 
-                ogs_sbi_discovery_option_t *discovery_option = NULL;
+                amf_nnssf_nsselection_param_t param;
 
-                discovery_option = ogs_sbi_discovery_option_new();
-                ogs_assert(discovery_option);
+                OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
+                OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
+                OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
+
+                service_name = OpenAPI_service_name_nsmf_pdusession;
+                target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
+                ogs_assert(target_nf_type);
+                requester_nf_type = NF_INSTANCE_TYPE(
+                        ogs_sbi_self()->nf_instance);
+                ogs_assert(requester_nf_type);
+
+                int state = AMF_CREATE_SM_CONTEXT_NO_STATE;
+
+                /********************************************
+                 * Visited Discovery Option
+                 *******************************************/
+                v_discovery_option = ogs_sbi_discovery_option_new();
+                ogs_assert(v_discovery_option);
 
                 ogs_sbi_discovery_option_add_snssais(
-                        discovery_option, &sess->s_nssai);
-                ogs_sbi_discovery_option_set_dnn(discovery_option, sess->dnn);
+                        v_discovery_option, &sess->s_nssai);
+                ogs_sbi_discovery_option_set_dnn(
+                        v_discovery_option, sess->dnn);
                 ogs_sbi_discovery_option_set_tai(
-                        discovery_option, &amf_ue->nr_tai);
+                        v_discovery_option, &amf_ue->nr_tai);
 
-                nf_instance = OGS_SBI_GET_NF_INSTANCE(
-                        sess->sbi.service_type_array[service_type]);
-                if (!nf_instance) {
-                    OpenAPI_nf_type_e requester_nf_type =
-                                NF_INSTANCE_TYPE(ogs_sbi_self()->nf_instance);
-                    ogs_assert(requester_nf_type);
+                /********************************************
+                 * Parameter for nnssf-nsselection build
+                 *******************************************/
+                memset(&param, 0, sizeof(param));
+                param.slice_info_for_pdu_session.presence = true;
+                param.slice_info_for_pdu_session.snssai = &sess->s_nssai;
 
-                    amf_sbi_select_nf(
-                            &sess->sbi,
-                            OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION,
-                            requester_nf_type,
-                            discovery_option);
-                    nf_instance = OGS_SBI_GET_NF_INSTANCE(
-                            sess->sbi.service_type_array[service_type]);
+                if (ogs_sbi_plmn_id_in_vplmn(&amf_ue->home_plmn_id) == true) {
 
-                    if (!nf_instance)
-                        ogs_info("No SMF Instance");
+                    if (sess->lbo_roaming_allowed == true)
+                        param.slice_info_for_pdu_session.roaming_indication =
+                            OpenAPI_roaming_indication_LOCAL_BREAKOUT;
                     else
-                        ogs_info("SMF Instance [%s]", nf_instance->id);
-                } else
-                    ogs_info("SMF Instance [%s]", nf_instance->id);
+                        param.slice_info_for_pdu_session.roaming_indication =
+                            OpenAPI_roaming_indication_HOME_ROUTED_ROAMING;
 
-                if (nf_instance) {
-                    r = amf_sess_sbi_discover_and_send(
-                            OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION,
-                            discovery_option,
-                            amf_nsmf_pdusession_build_create_sm_context,
-                            ran_ue, sess, AMF_CREATE_SM_CONTEXT_NO_STATE, NULL);
-                    ogs_expect(r == OGS_OK);
-                    ogs_assert(r != OGS_ERROR);
+                    param.home_plmn_id = &amf_ue->home_plmn_id;
+
+                } else
+                    param.slice_info_for_pdu_session.roaming_indication =
+                        OpenAPI_roaming_indication_NON_ROAMING;
+
+                param.tai = &amf_ue->nr_tai;
+
+                /********************************************
+                 * Check Visited SMF Instance
+                 *******************************************/
+                v_smf_instance = OGS_SBI_GET_NF_INSTANCE(
+                        sess->sbi.service_name_array[service_name]);
+                if (!v_smf_instance) {
+                    v_smf_instance =
+                        ogs_sbi_nf_instance_find_by_discovery_param(
+                                target_nf_type,
+                                requester_nf_type,
+                                v_discovery_option);
+                    if (v_smf_instance) {
+                        ogs_info("V-SMF Instance [%s](LIST)",
+                                v_smf_instance->id);
+                        OGS_SBI_SETUP_NF_INSTANCE(
+                                sess->sbi.service_name_array[service_name],
+                                v_smf_instance);
+                    } else
+                        ogs_info("No V-SMF Instance");
+                } else
+                    ogs_info("V-SMF Instance [%s](SESSION)",
+                            v_smf_instance->id);
+
+                if (v_smf_instance) {
+                    ogs_info("V-SMF Instance [%s]", v_smf_instance->id);
+                    if (param.slice_info_for_pdu_session.roaming_indication ==
+                            OpenAPI_roaming_indication_HOME_ROUTED_ROAMING) {
+
+                /********************************************
+                 * Check Home SMF Instance
+                 *******************************************/
+                        /* Home-Routed roaming */
+                        ogs_info("Home-Routed Roaming");
+
+                        h_smf_instance = OGS_SBI_GET_NF_INSTANCE(
+                                sess->sbi.home_nsmf_pdusession);
+
+                        if (!h_smf_instance) {
+                            ogs_sbi_discovery_option_t *h_discovery_option =
+                                ogs_sbi_discovery_option_new();
+                            ogs_assert(h_discovery_option);
+
+                            ogs_sbi_discovery_option_add_snssais(
+                                    h_discovery_option, &sess->s_nssai);
+                            ogs_sbi_discovery_option_set_dnn(
+                                    h_discovery_option, sess->dnn);
+                            ogs_sbi_discovery_option_set_tai(
+                                    h_discovery_option, &amf_ue->nr_tai);
+
+                            ogs_sbi_discovery_option_add_target_plmn_list(
+                                    h_discovery_option, &amf_ue->home_plmn_id);
+
+                            ogs_assert(ogs_local_conf()->
+                                    num_of_serving_plmn_id);
+                            for (i = 0; i <
+                                    ogs_local_conf()->num_of_serving_plmn_id;
+                                    i++) {
+                                ogs_sbi_discovery_option_add_requester_plmn_list(
+                                        h_discovery_option,
+                                        &ogs_local_conf()->serving_plmn_id[i]);
+                            }
+
+                            h_smf_instance =
+                                ogs_sbi_nf_instance_find_by_discovery_param(
+                                        target_nf_type,
+                                        requester_nf_type,
+                                        h_discovery_option);
+                            if (h_smf_instance) {
+                                ogs_info("H-SMF Instance [%s](LIST)",
+                                        h_smf_instance->id);
+                                OGS_SBI_SETUP_NF_INSTANCE(
+                                        sess->sbi.home_nsmf_pdusession,
+                                        h_smf_instance);
+                            } else
+                                ogs_info("No H-SMF Instance");
+
+                            ogs_sbi_discovery_option_free(h_discovery_option);
+
+                        } else
+                            ogs_info("H-SMF Instance [%s](SESSION)",
+                                    h_smf_instance->id);
+
+                        if (h_smf_instance) {
+                            /* Both V-SMF and H-SMF Discovered */
+                            ogs_info("H-SMF Instance [%s]", h_smf_instance->id);
+                        } else {
+                            /* No H-SMF Instance */
+                            ogs_info("H-SMF not discovered");
+                            state = AMF_SMF_SELECTION_IN_VPLMN_IN_HOME_ROUTED;
+                        }
+
+                    } else {
+                        /* Non-roaming or LBO roaming */
+                        ogs_info("V-SMF discovered in "
+                                "Non-Roaming or LBO-Roaming[%d]",
+                                sess->lbo_roaming_allowed);
+                    }
                 } else {
+                    /* No V-SMF Instance */
+                    if (param.slice_info_for_pdu_session.roaming_indication ==
+                            OpenAPI_roaming_indication_HOME_ROUTED_ROAMING) {
+                        ogs_info("V-SMF not discovered in HOME-ROUTED");
+                        state = AMF_SMF_SELECTION_IN_VPLMN_IN_HOME_ROUTED;
+                    } else {
+                        ogs_info("V-SMF not discovered in NON-ROAMING OR LBO");
+                        state =
+                            AMF_SMF_SELECTION_IN_VPLMN_IN_NON_ROAMING_OR_LBO;
+                    }
+                }
+
+                if (state == AMF_SMF_SELECTION_IN_VPLMN_IN_NON_ROAMING_OR_LBO ||
+                        state == AMF_SMF_SELECTION_IN_VPLMN_IN_HOME_ROUTED) {
+                    /********************************************
+                     * Send nnssf-nsselection (GET)
+                     *******************************************/
+                    ogs_info("nnssf-nsselection[%d:%d:%p:%p]",
+                            state,
+                            param.slice_info_for_pdu_session.roaming_indication,
+                            v_smf_instance,
+                            h_smf_instance);
                     r = amf_sess_sbi_discover_and_send(
-                            OGS_SBI_SERVICE_TYPE_NNSSF_NSSELECTION,
-                            discovery_option,
+                            OpenAPI_service_name_nnssf_nsselection, NULL,
                             amf_nnssf_nsselection_build_get,
-                            ran_ue, sess, 0, NULL);
+                            ran_ue, sess, state, &param);
                     ogs_expect(r == OGS_OK);
                     ogs_assert(r != OGS_ERROR);
+
+                    ogs_sbi_discovery_option_free(v_discovery_option);
+
+                } else if (state == AMF_CREATE_SM_CONTEXT_NO_STATE) {
+                    /********************************************
+                     * Send nsmf-pdusession (CREATE SM CONTEXT)
+                     *******************************************/
+                    ogs_info("nsmf_pdusession [%d:%p:%p]",
+                            param.slice_info_for_pdu_session.roaming_indication,
+                            v_smf_instance,
+                            h_smf_instance);
+                    r = amf_sess_sbi_discover_and_send(
+                            OpenAPI_service_name_nsmf_pdusession,
+                            v_discovery_option,
+                            amf_nsmf_pdusession_build_create_sm_context,
+                            ran_ue, sess, state, NULL);
+                    ogs_expect(r == OGS_OK);
+                    ogs_assert(r != OGS_ERROR);
+
+                } else {
+                    ogs_error("Invalid state [%d]", state);
+                    ogs_assert_if_reached();
                 }
 
             } else {
+                amf_nsmf_pdusession_sm_context_param_t param;
 
                 memset(&param, 0, sizeof(param));
                 param.release = 1;
                 param.cause = OpenAPI_cause_REL_DUE_TO_DUPLICATE_SESSION_ID;
 
                 r = amf_sess_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                        OpenAPI_service_name_nsmf_pdusession, NULL,
                         amf_nsmf_pdusession_build_update_sm_context,
                         ran_ue, sess,
                         AMF_UPDATE_SM_CONTEXT_DUPLICATED_PDU_SESSION_ID,
@@ -1445,7 +1660,6 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
             }
 
         } else {
-
             if (!SESSION_CONTEXT_IN_SMF(sess)) {
                 ogs_error("[%s:%d] Session Context is not in SMF [%d]",
                     amf_ue->supi, sess->psi, gsm_header->message_type);
@@ -1456,25 +1670,31 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                 return OGS_ERROR;
             }
 
-            memset(&param, 0, sizeof(param));
-            param.n1smbuf = sess->payload_container;
-
             if (gsm_header->message_type ==
                     OGS_NAS_5GS_PDU_SESSION_RELEASE_COMPLETE) {
+                amf_nsmf_pdusession_sm_context_param_t param;
+
+                memset(&param, 0, sizeof(param));
+                param.n1smbuf = sess->payload_container;
+
                 param.ue_location = true;
                 param.ue_timezone = true;
 
                 r = amf_sess_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                        OpenAPI_service_name_nsmf_pdusession, NULL,
                         amf_nsmf_pdusession_build_update_sm_context,
                         ran_ue, sess,
                         AMF_UPDATE_SM_CONTEXT_N1_RELEASED, &param);
                 ogs_expect(r == OGS_OK);
                 ogs_assert(r != OGS_ERROR);
             } else {
+                amf_nsmf_pdusession_sm_context_param_t param;
+
+                memset(&param, 0, sizeof(param));
+                param.n1smbuf = sess->payload_container;
 
                 r = amf_sess_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                        OpenAPI_service_name_nsmf_pdusession, NULL,
                         amf_nsmf_pdusession_build_update_sm_context,
                         ran_ue, sess, AMF_UPDATE_SM_CONTEXT_MODIFIED, &param);
                 ogs_expect(r == OGS_OK);
@@ -1546,6 +1766,7 @@ static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
         ogs_nas_message_container_t *nas_message_container)
 {
     int gmm_cause;
+    uint8_t expected_message_type = 0;
 
     ogs_pkbuf_t *nasbuf = NULL;
     ogs_nas_5gs_message_t nas_message;
@@ -1600,6 +1821,55 @@ static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
         ogs_error("ogs_nas_5gmm_decode() failed");
         ogs_pkbuf_free(nasbuf);
         return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
+    }
+
+    /*
+     * 3GPP TS 24.501 4.4.6 / TS 33.501 6.4.6
+     *
+     * Only an initial NAS message (REGISTRATION REQUEST or SERVICE REQUEST)
+     * may be carried in the NAS message container IE. Reject any other
+     * inner message type with SEMANTICALLY_INCORRECT_MESSAGE rather than
+     * dispatching it.
+     */
+    switch (nas_message.gmm.h.message_type) {
+    case OGS_NAS_5GS_REGISTRATION_REQUEST:
+    case OGS_NAS_5GS_SERVICE_REQUEST:
+        break;
+    default:
+        ogs_error("[%s] Unexpected NAS message type [%d] in "
+                "NAS message container [outer:%d]",
+                amf_ue->supi,
+                nas_message.gmm.h.message_type, message_type);
+        ogs_pkbuf_free(nasbuf);
+        return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
+    }
+
+    /*
+     * The protected NAS message must match the procedure being resumed.
+     * In SecurityModeComplete, the procedure is the previously stored
+     * initial NAS message. Otherwise, it is the current outer message.
+     *
+     * Without this check, a SECURITY MODE COMPLETE container can carry an
+     * initial NAS message of a different type than the one that triggered
+     * the security mode control procedure. The AMF would then resume on
+     * the other path, bypassing per-procedure preconditions (e.g.
+     * allowed_nssai is populated only on the registration path) and reach
+     * ngap_ue_build_initial_context_setup_request() with an empty
+     * allowed_nssai, hitting ogs_assert(amf_ue->allowed_nssai.num_of_s_nssai)
+     * and aborting open5gs-amfd (issue #4422).
+     */
+    expected_message_type =
+        (message_type == OGS_NAS_5GS_SECURITY_MODE_COMPLETE) ?
+            amf_ue->nas.message_type : message_type;
+    if (nas_message.gmm.h.message_type != expected_message_type) {
+        ogs_error("[%s] NAS message type mismatch in NAS message container "
+                "[expected:%d, received:%d, outer:%d]",
+                amf_ue->supi,
+                expected_message_type,
+                nas_message.gmm.h.message_type,
+                message_type);
+        ogs_pkbuf_free(nasbuf);
+        return OGS_5GMM_CAUSE_MESSAGE_NOT_COMPATIBLE_WITH_THE_PROTOCOL_STATE;
     }
 
     gmm_cause = OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;

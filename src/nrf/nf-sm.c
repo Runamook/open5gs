@@ -81,12 +81,13 @@ void nrf_nf_state_final(ogs_fsm_t *s, nrf_event_t *e)
 
 void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
 {
-    bool handled;
+    bool handled = false;
     ogs_sbi_nf_instance_t *nf_instance = NULL;
 
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -117,8 +118,10 @@ void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NNRF_NFM)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nnrf_nfm:
 
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_NF_INSTANCES)
@@ -128,7 +131,9 @@ void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
 
                     handled = nrf_nnrf_handle_nf_register(
                             nf_instance, stream, message);
-                    if (handled == false)
+                    if (handled == true)
+                        OGS_FSM_TRAN(s, nrf_nf_state_registered);
+                    else
                         OGS_FSM_TRAN(s, nrf_nf_state_exception);
                     break;
 
@@ -139,6 +144,7 @@ void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
                             "Invalid HTTP method", message->h.method, NULL));
+                    OGS_FSM_TRAN(s, nrf_nf_state_exception);
                 END
                 break;
 
@@ -150,10 +156,11 @@ void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
                         OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
                         "Invalid resource name",
                         message->h.resource.component[0], NULL));
+                OGS_FSM_TRAN(s, nrf_nf_state_exception);
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s] Invalid API name [%s]",
                     nf_instance->id, message->h.service.name);
             ogs_assert(true ==
@@ -161,9 +168,8 @@ void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
                     OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
                     "Invalid resource name", message->h.service.name,
                     NULL));
-        END
-
-        OGS_FSM_TRAN(s, nrf_nf_state_registered);
+            OGS_FSM_TRAN(s, nrf_nf_state_exception);
+        }
         break;
 
     default:
@@ -175,7 +181,6 @@ void nrf_nf_state_will_register(ogs_fsm_t *s, nrf_event_t *e)
                 message, "Unknown event", nrf_event_get_name(e),
                 NULL));
         OGS_FSM_TRAN(s, nrf_nf_state_exception);
-        break;
     }
 }
 
@@ -188,6 +193,7 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *message = NULL;
     ogs_sbi_response_t *response = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -239,8 +245,10 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NNRF_NFM)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nnrf_nfm:
 
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_NF_INSTANCES)
@@ -258,8 +266,33 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
 
                     handled = nrf_nnrf_handle_nf_update(
                             nf_instance, stream, message);
-                    if (handled == false)
-                        OGS_FSM_TRAN(s, nrf_nf_state_exception);
+                    if (handled == false) {
+                        ogs_error("[%s] Invalid NF update [type:%s] - "
+                                "keeping existing registration",
+                                nf_instance->id,
+                                OpenAPI_nf_type_ToString(
+                                    nf_instance->nf_type));
+                        /*
+                         * ogs_nnrf_nfm_handle_nf_profile() now guarantees
+                         * that the live nf_instance is unchanged on failure
+                         * (shadow-swap rebuild). nrf_nnrf_handle_nf_update()
+                         * has already sent the HTTP error response, so we
+                         * keep the existing registration intact - treating
+                         * a malformed PUT/PATCH update as an implicit
+                         * de-registration would evict an otherwise healthy
+                         * peer because of one bad message.
+                         *
+                         * The previous behaviour was to transition to
+                         * nrf_nf_state_exception, which causes the FSM
+                         * dispatcher in nrf_state_operational() to call
+                         * nrf_nf_fsm_fini() + ogs_sbi_nf_instance_remove().
+                         * That eviction is the correct response for
+                         * nrf_nf_state_will_register (initial registration
+                         * never completed), but is wrong for
+                         * nrf_nf_state_registered (the registration is
+                         * still valid - only this one update was bad).
+                         */
+                    }
                     break;
 
                 CASE(OGS_SBI_HTTP_METHOD_DELETE)
@@ -278,6 +311,7 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
                             "Invalid HTTP method", message->h.method, NULL));
+                    OGS_FSM_TRAN(s, nrf_nf_state_exception);
                 END
                 break;
 
@@ -289,10 +323,11 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
                         OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
                         "Invalid resource name",
                         message->h.resource.component[0], NULL));
+                OGS_FSM_TRAN(s, nrf_nf_state_exception);
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s] Invalid API name [%s]",
                     nf_instance->id, message->h.service.name);
             ogs_assert(true ==
@@ -300,7 +335,8 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
                     OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
                     "Invalid resource name", message->h.service.name,
                     NULL));
-        END
+            OGS_FSM_TRAN(s, nrf_nf_state_exception);
+        }
         break;
 
     default:
@@ -312,7 +348,6 @@ void nrf_nf_state_registered(ogs_fsm_t *s, nrf_event_t *e)
                 message, "Unknown event", nrf_event_get_name(e),
                 NULL));
         OGS_FSM_TRAN(s, nrf_nf_state_exception);
-        break;
     }
 }
 

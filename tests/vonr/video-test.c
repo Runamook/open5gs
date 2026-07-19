@@ -74,7 +74,7 @@ static void test1_func(abts_case *tc, void *data)
     test_ue->opc_string = "e8ed289deba952e4283b54e88e6183ca";
 
     /* gNB connects to AMF */
-    ngap = testngap_client(AF_INET);
+    ngap = testngap_client(1, AF_INET);
     ABTS_PTR_NOTNULL(tc, ngap);
 
     /* gNB connects to UPF */
@@ -299,7 +299,7 @@ static void test1_func(abts_case *tc, void *data)
     ogs_assert(af_sess->dnn);
 
     af_local_discover_and_send(
-            OGS_SBI_SERVICE_TYPE_NBSF_MANAGEMENT,
+            OpenAPI_service_name_nbsf_management,
             af_sess, NULL,
             af_nbsf_management_build_discover);
 

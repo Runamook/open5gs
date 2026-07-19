@@ -8,7 +8,7 @@
 #define _OpenAPILinksH_
 
 #include <string.h>
-#include "../openapi/external/cJSON.h"
+#include "third-party/cjson/cJSON.h"
 #include "../openapi/include/list.h"
 #include "../openapi/include/keyValuePair.h"
 
@@ -23,6 +23,7 @@ typedef struct ogs_sbi_links_s {
 } ogs_sbi_links_t;
 
 cJSON *ogs_sbi_links_convertToJSON(ogs_sbi_links_t *links);
+ogs_sbi_links_t *ogs_sbi_links_parseFromJSON(cJSON *json);
 
 #ifdef __cplusplus
 }

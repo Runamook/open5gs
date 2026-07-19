@@ -48,7 +48,9 @@ typedef struct test_context_s {
     ogs_list_t      ngap_list;      /* AMF NGAP IPv4 Server List */
     ogs_list_t      ngap_list6;     /* AMF NGAP IPv6 Server List */
     ogs_sockaddr_t  *ngap_addr;     /* AMF NGAP IPv4 Address */
+    ogs_sockaddr_t  *ngap2_addr;    /* OLD AMF NGAP IPv4 Address */
     ogs_sockaddr_t  *ngap_addr6;    /* AMF NGAP IPv6 Address */
+    ogs_sockaddr_t  *ngap2_addr6;   /* OLD AMF NGAP IPv6 Address */
 
     uint16_t        s1ap_port;      /* Default S1AP Port */
     ogs_list_t      s1ap_list;      /* MME S1AP IPv4 Server List */
@@ -175,7 +177,7 @@ typedef struct test_attach_request_param_s {
 typedef struct test_tau_request_param_s {
     struct {
     ED8(uint8_t ue_network_capability:1;,
-        uint8_t eps_bearer_context_status:1;,
+        uint8_t reserved:1;,
         uint8_t guti:1;,
         uint8_t last_visited_registered_tai:1;,
         uint8_t drx_parameter:1;,
@@ -198,6 +200,7 @@ typedef struct test_tau_request_param_s {
         uint8_t device_properties:1;,
         uint8_t spare2:6;)
     };
+    uint8_t eps_bearer_context_status;
 } __attribute__ ((packed)) test_tau_request_param_t;
 
 typedef struct test_service_request_param_s {

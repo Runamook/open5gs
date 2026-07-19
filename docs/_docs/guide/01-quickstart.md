@@ -75,19 +75,25 @@ With the exception of the SMF and UPF, all config files for the 5G SA core funct
 #### Getting MongoDB
 ---
 
+**Tip:** MongoDB is used as the database for PCF/UDR and PCRF/HSS.
+{: .notice--info}
+
+**Note:** If you already have an external MongoDB server, you can skip this section and add the `--no-install-recommends` flag when installing the Open5GS packages (e.g. `sudo apt install --no-install-recommends open5gs`).
+{: .notice--warning}
+
 Import the public key used by the package management system.
 
 ```bash
 $ sudo apt update
 $ sudo apt install gnupg
-$ curl -fsSL https://pgp.mongodb.com/server-6.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg --dearmor
+$ curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
 ```
 
-Create the list file /etc/apt/sources.list.d/mongodb-org-6.0.list for your version of Ubuntu.
+Create the list file /etc/apt/sources.list.d/mongodb-org-8.0.list for your version of Ubuntu.
 
 On ubuntu 22.04 (Jammy)
 ```bash
-$ echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+$ echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 ```
 
 Install the MongoDB packages.
@@ -115,7 +121,7 @@ The Open5GS packages for Debian are available on [OBS](https://build.opensuse.or
 
 ```bash
 $ sudo apt update
-$ wget -qO - https://download.opensuse.org/repositories/home:/acetcom:/open5gs:/latest/Debian_10/Release.key | sudo apt-key add -
+$ wget -qO - https://build.opensuse.org/projects/home:acetcom/signing_keys/download\?kind\=gpg | sudo apt-key add -
 $ sudo sh -c "echo 'deb http://download.opensuse.org/repositories/home:/acetcom:/open5gs:/latest/Debian_10/ ./' > /etc/apt/sources.list.d/open5gs.list"
 $ sudo apt update
 $ sudo apt install open5gs
@@ -145,7 +151,7 @@ Nightly bulit package are provided by [Osmocom](https://osmocom.org) on [OBS](ht
 ```bash
 $ sudo apt update
 $ sudo apt install wget gnupg
-$ wget -qO - https://downloads.osmocom.org/packages/osmocom:/nightly/xUbuntu_20.04/Release.key | sudo apt-key add -
+$ wget -qO - https://obs.osmocom.org/projects/osmocom/public_key | sudo apt-key add -
 $ sudo sh -c "echo 'deb https://downloads.osmocom.org/packages/osmocom:/nightly/xUbuntu_20.04/ ./' > /etc/apt/sources.list.d/open5gs.list"
 $ sudo apt update
 $ sudo apt install open5gs

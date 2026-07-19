@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2024 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -43,6 +43,8 @@ ogs_pkbuf_t *emm_build_attach_accept(
         &attach_accept->location_area_identification;
     ogs_nas_mobile_identity_t *ms_identity = &attach_accept->ms_identity;
     ogs_nas_mobile_identity_tmsi_t *tmsi = &ms_identity->tmsi;;
+    ogs_nas_emergency_number_list_t *emerg_numbers =
+        &attach_accept->emergency_number_list;
 
     ogs_assert(mme_ue);
     ogs_assert(esmbuf);
@@ -83,6 +85,11 @@ ogs_pkbuf_t *emm_build_attach_accept(
     if (mme_ue->network_access_mode == OGS_NETWORK_ACCESS_MODE_ONLY_PACKET) {
         /* permit only EPS_ATTACH */
         eps_attach_result->result = OGS_NAS_ATTACH_TYPE_EPS_ATTACH;
+        if (ogs_global_conf()->parameter.fake_csfb == true)
+            eps_attach_result->result =
+                OGS_NAS_ATTACH_TYPE_COMBINED_EPS_IMSI_ATTACH;
+        else
+            eps_attach_result->result = OGS_NAS_ATTACH_TYPE_EPS_ATTACH;
     } else {
         eps_attach_result->result = mme_ue->nas_eps.attach.value;
     }
@@ -163,7 +170,7 @@ ogs_pkbuf_t *emm_build_attach_accept(
     attach_accept->esm_message_container.buffer = esmbuf->data;
     attach_accept->esm_message_container.length = esmbuf->len;
 
-    if (mme_ue->next.m_tmsi) {
+    if (MME_NEXT_GUTI_IS_AVAILABLE(mme_ue)) {
         attach_accept->presencemask |= OGS_NAS_EPS_ATTACH_ACCEPT_GUTI_PRESENT;
 
         ogs_debug("    [%s]    GUTI[G:%d,C:%d,M_TMSI:0x%x]",
@@ -197,6 +204,30 @@ ogs_pkbuf_t *emm_build_attach_accept(
             OGS_NAS_EPS_ATTACH_ACCEPT_T3423_VALUE_PRESENT;
     }
 
+    /* Set emergency number(s) */
+    if (!ogs_list_empty(&mme_self()->emerg_list)) {
+        mme_emerg_t *emerg;
+        ogs_nas_emergency_number_item_t *item;
+        int len, o = 0;
+        ogs_list_for_each(&mme_self()->emerg_list, emerg) {
+            len = (strlen(emerg->digits) + 1) >> 1;
+            if (o + 2 + len > OGS_NAS_MAX_EMERGENCY_NUMBER_LIST_LEN) {
+                ogs_debug("    Too many list EMERG_NUM_LIST items.");
+                break;
+            }
+            ogs_debug("    EMERG_NUM_LIST[CAT:0x%02x,DIGITS:%s]",
+                    emerg->categories, emerg->digits);
+            item = (ogs_nas_emergency_number_item_t *)(emerg_numbers->buffer + o);
+            item->service_category = emerg->categories;
+            ogs_bcd_to_buffer(emerg->digits, item->digits, &len);
+            item->length = 1 + len;
+            o += 2 + len;
+        }
+        attach_accept->presencemask |=
+            OGS_NAS_EPS_ATTACH_ACCEPT_EMERGENCY_NUMBER_LIST_PRESENT;
+        emerg_numbers->length = o;
+    }
+
     attach_accept->presencemask |=
         OGS_NAS_EPS_ATTACH_ACCEPT_EPS_NETWORK_FEATURE_SUPPORT_PRESENT;
     if (ogs_global_conf()->parameter.use_openair == false) {
@@ -204,12 +235,18 @@ ogs_pkbuf_t *emm_build_attach_accept(
     } else {
         eps_network_feature_support->length = 1;
     }
+    if (ogs_global_conf()->parameter.no_ims == true) {
+    	eps_network_feature_support->ims_voice_over_ps_session_in_s1_mode = 0;
+    } else {
     eps_network_feature_support->ims_voice_over_ps_session_in_s1_mode = 1;
+    }
     eps_network_feature_support->extended_protocol_configuration_options = 1;
+    if (mme_self()->emergency.dnn)
+        eps_network_feature_support->emergency_bearer_services_in_s1_mode = 1;
 
-    if (MME_P_TMSI_IS_AVAILABLE(mme_ue)) {
+    if (MME_NEXT_P_TMSI_IS_AVAILABLE(mme_ue)) {
         ogs_assert(mme_ue->csmap);
-        ogs_assert(mme_ue->p_tmsi);
+        ogs_assert(mme_ue->next.p_tmsi);
 
         attach_accept->presencemask |=
             OGS_NAS_EPS_ATTACH_ACCEPT_LOCATION_AREA_IDENTIFICATION_PRESENT;
@@ -224,8 +261,20 @@ ogs_pkbuf_t *emm_build_attach_accept(
         tmsi->spare = 0xf;
         tmsi->odd_even = 0;
         tmsi->type = OGS_NAS_MOBILE_IDENTITY_TMSI;
-        tmsi->tmsi = mme_ue->p_tmsi;
+        tmsi->tmsi = mme_ue->next.p_tmsi;
         ogs_debug("    P-TMSI: 0x%08x", tmsi->tmsi);
+    }
+
+    attach_accept->presencemask |=
+        OGS_NAS_EPS_ATTACH_ACCEPT_NETWORK_POLICY_PRESENT;
+    attach_accept->network_policy.type =
+            OGS_NAS_EPS_ATTACH_ACCEPT_NETWORK_POLICY_TYPE >> 4;
+    if (ogs_global_conf()->parameter.allow_unsecured_redirection == true) {
+        attach_accept->network_policy.
+            unsecured_redirection_to_geran_not_allowed = 0;
+    } else {
+        attach_accept->network_policy.
+            unsecured_redirection_to_geran_not_allowed = 1;
     }
 
     pkbuf = nas_eps_security_encode(mme_ue, &message);
@@ -292,9 +341,10 @@ ogs_pkbuf_t *emm_build_authentication_request(mme_ue_t *mme_ue)
     message.emm.h.protocol_discriminator = OGS_NAS_PROTOCOL_DISCRIMINATOR_EMM;
     message.emm.h.message_type = OGS_NAS_EPS_AUTHENTICATION_REQUEST;
 
-    authentication_request->nas_key_set_identifierasme.tsc = 0;
+    authentication_request->nas_key_set_identifierasme.tsc =
+        mme_ue->nas_eps.mme.tsc;
     authentication_request->nas_key_set_identifierasme.value =
-        mme_ue->nas_eps.ksi;
+        mme_ue->nas_eps.mme.ksi;
     memcpy(authentication_request->authentication_parameter_rand.rand,
             mme_ue->rand, OGS_RAND_LEN);
     memcpy(authentication_request->authentication_parameter_autn.autn,
@@ -345,16 +395,13 @@ ogs_pkbuf_t *emm_build_security_mode_command(mme_ue_t *mme_ue)
     message.emm.h.protocol_discriminator = OGS_NAS_PROTOCOL_DISCRIMINATOR_EMM;
     message.emm.h.message_type = OGS_NAS_EPS_SECURITY_MODE_COMMAND;
 
-    mme_ue->selected_int_algorithm = mme_selected_int_algorithm(mme_ue);
-    mme_ue->selected_enc_algorithm = mme_selected_enc_algorithm(mme_ue);
-
     selected_nas_security_algorithms->type_of_integrity_protection_algorithm =
         mme_ue->selected_int_algorithm;
     selected_nas_security_algorithms->type_of_ciphering_algorithm =
         mme_ue->selected_enc_algorithm;
 
-    nas_key_set_identifier->tsc = 0;
-    nas_key_set_identifier->value = 0;
+    nas_key_set_identifier->tsc = mme_ue->nas_eps.mme.tsc;
+    nas_key_set_identifier->value = mme_ue->nas_eps.mme.ksi;
 
     replayed_ue_security_capabilities->eea = mme_ue->ue_network_capability.eea;
     replayed_ue_security_capabilities->eia = mme_ue->ue_network_capability.eia;
@@ -443,12 +490,8 @@ ogs_pkbuf_t *emm_build_security_mode_command(mme_ue_t *mme_ue)
                 sizeof(mme_ue->ue_additional_security_capability));
     }
 
-    if (mme_ue->selected_int_algorithm == OGS_NAS_SECURITY_ALGORITHMS_EIA0) {
-        ogs_error("Encrypt[0x%x] can be skipped with EEA0, "
-            "but Integrity[0x%x] cannot be bypassed with EIA0",
-            mme_ue->selected_enc_algorithm, mme_ue->selected_int_algorithm);
-        return NULL;
-    }
+    ogs_assert(mme_ue->selected_int_algorithm !=
+            OGS_NAS_SECURITY_ALGORITHMS_EIA0);
 
     ogs_kdf_nas_eps(OGS_KDF_NAS_INT_ALG, mme_ue->selected_int_algorithm,
             mme_ue->kasme, mme_ue->knas_int);
@@ -501,6 +544,10 @@ ogs_pkbuf_t *emm_build_tau_accept(mme_ue_t *mme_ue)
     ogs_nas_eps_tracking_area_update_accept_t *tau_accept =
         &message.emm.tracking_area_update_accept;
     ogs_nas_eps_mobile_identity_t *nas_guti = &tau_accept->guti;
+    ogs_nas_location_area_identification_t *lai =
+        &tau_accept->location_area_identification;
+    ogs_nas_mobile_identity_t *ms_identity = &tau_accept->ms_identity;
+    ogs_nas_mobile_identity_tmsi_t *tmsi = &ms_identity->tmsi;;
     ogs_nas_gprs_timer_t *t3412_value = &tau_accept->t3412_value;
     ogs_nas_gprs_timer_t *t3402_value = &tau_accept->t3402_value;
     ogs_nas_gprs_timer_t *t3423_value = &tau_accept->t3423_value;
@@ -537,7 +584,7 @@ ogs_pkbuf_t *emm_build_tau_accept(mme_ue_t *mme_ue)
             OGS_NAS_EPS_TRACKING_AREA_UPDATE_ACCEPT_T3412_VALUE_PRESENT ;
     }
 
-    if (mme_ue->next.m_tmsi) {
+    if (MME_NEXT_GUTI_IS_AVAILABLE(mme_ue)) {
         tau_accept->presencemask |=
             OGS_NAS_EPS_TRACKING_AREA_UPDATE_ACCEPT_GUTI_PRESENT;
 
@@ -602,6 +649,27 @@ ogs_pkbuf_t *emm_build_tau_accept(mme_ue_t *mme_ue)
         sess = mme_sess_next(sess);
     }
 
+    /* Location Area Identification & MS Identity */
+    if (MME_NEXT_P_TMSI_IS_AVAILABLE(mme_ue)) {
+        ogs_assert(mme_ue->csmap);
+        ogs_assert(mme_ue->next.p_tmsi);
+
+        tau_accept->presencemask |= OGS_NAS_EPS_TRACKING_AREA_UPDATE_ACCEPT_LOCATION_AREA_IDENTIFICATION_PRESENT;
+        lai->nas_plmn_id = mme_ue->csmap->lai.nas_plmn_id;
+        lai->lac = mme_ue->csmap->lai.lac;
+        ogs_debug("    LAI[PLMN_ID:%06x,LAC:%d]",
+                ogs_plmn_id_hexdump(&lai->nas_plmn_id), lai->lac);
+
+        tau_accept->presencemask |=
+            OGS_NAS_EPS_TRACKING_AREA_UPDATE_ACCEPT_MS_IDENTITY_PRESENT;
+        ms_identity->length = 5;
+        tmsi->spare = 0xf;
+        tmsi->odd_even = 0;
+        tmsi->type = OGS_NAS_MOBILE_IDENTITY_TMSI;
+        tmsi->tmsi = mme_ue->next.p_tmsi;
+        ogs_debug("    P-TMSI: 0x%08x", tmsi->tmsi);
+    }
+
     /* Set T3402 */
     if (mme_self()->time.t3402.value) {
         rv = ogs_nas_gprs_timer_from_sec(
@@ -628,10 +696,27 @@ ogs_pkbuf_t *emm_build_tau_accept(mme_ue_t *mme_ue)
     } else {
         tau_accept->eps_network_feature_support.length = 1;
     }
-    tau_accept->eps_network_feature_support.
-        ims_voice_over_ps_session_in_s1_mode = 1;
+    if (ogs_global_conf()->parameter.no_ims == true) {
+    	tau_accept->eps_network_feature_support.
+        	ims_voice_over_ps_session_in_s1_mode = 0;
+    } else {
+        tau_accept->eps_network_feature_support.
+                ims_voice_over_ps_session_in_s1_mode = 1;
+    }
     tau_accept->eps_network_feature_support.
         extended_protocol_configuration_options = 1;
+
+    tau_accept->presencemask |=
+        OGS_NAS_EPS_TRACKING_AREA_UPDATE_ACCEPT_NETWORK_POLICY_PRESENT;
+    tau_accept->network_policy.type =
+        OGS_NAS_EPS_TRACKING_AREA_UPDATE_ACCEPT_NETWORK_POLICY_TYPE >> 4;
+    if (ogs_global_conf()->parameter.allow_unsecured_redirection == true) {
+        tau_accept->network_policy.
+            unsecured_redirection_to_geran_not_allowed = 0;
+    } else {
+        tau_accept->network_policy.
+            unsecured_redirection_to_geran_not_allowed = 1;
+    }
 
     return nas_eps_security_encode(mme_ue, &message);
 }

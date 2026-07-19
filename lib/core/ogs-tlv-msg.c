@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019,2026 by Sukchan Lee <acetcom@gmail.com>
  * Copyright (C) 2022 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
  *
  * This file is part of Open5GS.
@@ -512,8 +512,8 @@ static int tlv_parse_leaf(void *msg, ogs_tlv_desc_t *desc, ogs_tlv_t *tlv)
     {
         ogs_tlv_uint16_t *v = (ogs_tlv_uint16_t *)msg;
 
-        if (tlv->length < 1 || tlv->length > 2) {
-            ogs_error("Invalid TLV length %d.", tlv->length);
+        if (tlv->length != 2) {
+            ogs_error("Invalid TLV length %d. It should be 2", tlv->length);
             return OGS_ERROR;
         }
         v->u16 = ((((uint8_t*)tlv->value)[0]<< 8)&0xff00) |
@@ -527,8 +527,8 @@ static int tlv_parse_leaf(void *msg, ogs_tlv_desc_t *desc, ogs_tlv_t *tlv)
     {
         ogs_tlv_uint24_t *v = (ogs_tlv_uint24_t *)msg;
 
-        if (tlv->length < 1 || tlv->length > 3) {
-            ogs_error("Invalid TLV length %d.", tlv->length);
+        if (tlv->length != 3) {
+            ogs_error("Invalid TLV length %d. It should be 3", tlv->length);
             return OGS_ERROR;
         }
         v->u24 = ((((uint8_t*)tlv->value)[0]<<16)&0x00ff0000) |
@@ -543,8 +543,8 @@ static int tlv_parse_leaf(void *msg, ogs_tlv_desc_t *desc, ogs_tlv_t *tlv)
     {
         ogs_tlv_uint32_t *v = (ogs_tlv_uint32_t *)msg;
 
-        if (tlv->length < 1 || tlv->length > 4) {
-            ogs_error("Invalid TLV length %d.", tlv->length);
+        if (tlv->length != 4) {
+            ogs_error("Invalid TLV length %d. It should be 4", tlv->length);
             return OGS_ERROR;
         }
         v->u32 = ((((uint8_t*)tlv->value)[0]<<24)&0xff000000) |
@@ -829,29 +829,52 @@ static ogs_tlv_t *ogs_tlv_parse_block_desc(uint32_t length, void *data, uint8_t 
     ogs_tlv_t *curr = NULL;
 
     root = curr = ogs_tlv_get();
-
-    ogs_assert(curr);
+    if (!curr) {
+        ogs_error("ogs_tlv_parse_block() failed[LEN:%d,MODE:%d] - no tlv",
+                length, msg_mode);
+        ogs_log_hexdump(OGS_LOG_ERROR, data, ogs_min(length, 512));
+        return NULL;
+    }
 
     pos = tlv_get_element_desc(curr, pos, msg_mode, desc);
-
-    ogs_assert(pos);
+    if (!pos) {
+        ogs_error("ogs_tlv_parse_block() failed[LEN:%u,MODE:%u] - parse error",
+                length, msg_mode);
+        ogs_log_hexdump(OGS_LOG_ERROR, data, ogs_min(length, 512));
+        ogs_tlv_free_all(root);
+        return NULL;
+    }
 
     while(pos - blk < length) {
         prev = curr;
 
         curr = ogs_tlv_get();
-        ogs_assert(curr);
+        if (!curr) {
+            ogs_error("ogs_tlv_parse_block() failed[LEN:%d,MODE:%d]",
+                    length, msg_mode);
+            ogs_log_hexdump(OGS_LOG_ERROR, data, ogs_min(length, 512));
+
+            ogs_tlv_free_all(root);
+            return NULL;
+        }
         prev->next = curr;
 
         pos = tlv_get_element_desc(curr, pos, msg_mode, desc);
-        ogs_assert(pos);
+        if (!pos) {
+            ogs_error("ogs_tlv_parse_block() failed[LEN:%d,MODE:%d]",
+                    length, msg_mode);
+            ogs_log_hexdump(OGS_LOG_ERROR, data, ogs_min(length, 512));
+
+            ogs_tlv_free_all(root);
+            return NULL;
+        }
     }
 
     if (length != (pos - blk)) {
         ogs_error("ogs_tlv_parse_block() failed[LEN:%d,MODE:%d]",
                 length, msg_mode);
         ogs_error("POS[%p] BLK[%p] POS-BLK[%d]", pos, blk, (int)(pos - blk));
-        ogs_log_hexdump(OGS_LOG_FATAL, data, length);
+        ogs_log_hexdump(OGS_LOG_ERROR, data, ogs_min(length, 512));
 
         ogs_tlv_free_all(root);
         return NULL;

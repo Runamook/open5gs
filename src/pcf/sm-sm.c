@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2024 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -37,8 +37,9 @@ void pcf_sm_state_final(ogs_fsm_t *s, pcf_event_t *e)
 
 void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 {
+    int service_name_id = OpenAPI_service_name_NULL;
     bool handled;
-    pcf_ue_t *pcf_ue = NULL;
+    pcf_ue_sm_t *pcf_ue_sm = NULL;
     pcf_sess_t *sess = NULL;
 
     ogs_sbi_stream_t *stream = NULL;
@@ -52,8 +53,8 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 
     sess = pcf_sess_find_by_id(e->sess_id);
     ogs_assert(sess);
-    pcf_ue = pcf_ue_find_by_id(sess->pcf_ue_id);
-    ogs_assert(pcf_ue);
+    pcf_ue_sm = pcf_ue_sm_find_by_id(sess->pcf_ue_sm_id);
+    ogs_assert(pcf_ue_sm);
 
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
@@ -76,33 +77,49 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             if (!message->h.resource.component[1]) {
                 handled = pcf_npcf_smpolicycontrol_handle_create(
                         sess, stream, message);
                 if (!handled) {
                     ogs_error("[%s:%d] "
                             "pcf_npcf_smpolicycontrol_handle_create() failed",
-                            pcf_ue->supi, sess->psi);
+                            pcf_ue_sm->supi, sess->psi);
                     OGS_FSM_TRAN(s, pcf_sm_state_exception);
                 }
             } else {
                 SWITCH(message->h.resource.component[2])
                 CASE(OGS_SBI_RESOURCE_NAME_DELETE)
-                    handled = pcf_npcf_smpolicycontrol_handle_delete(
-                            sess, stream, message);
-                    if (!handled) {
-                        ogs_error("[%s:%d] "
-                            "pcf_npcf_smpolicycontrol_handle_delete() failed",
-                            pcf_ue->supi, sess->psi);
-                        OGS_FSM_TRAN(s, pcf_sm_state_exception);
-                    }
+                    SWITCH(message->h.method)
+                    CASE(OGS_SBI_HTTP_METHOD_POST)
+                        handled = pcf_npcf_smpolicycontrol_handle_delete(
+                                sess, stream, message);
+                        if (!handled) {
+                            ogs_error("[%s:%d] "
+                                "pcf_npcf_smpolicycontrol_handle_delete() "
+                                "failed", pcf_ue_sm->supi, sess->psi);
+                            OGS_FSM_TRAN(s, pcf_sm_state_exception);
+                        }
+                        break;
+
+                    DEFAULT
+                        ogs_error("[%s:%d] Invalid HTTP method [%s] for "
+                                "/delete", pcf_ue_sm->supi, sess->psi,
+                                message->h.method);
+                        ogs_assert(true ==
+                            ogs_sbi_server_send_error(stream,
+                                OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,
+                                message, "Invalid HTTP method",
+                                message->h.uri, NULL));
+                    END
                     break;
 
                 DEFAULT
                     ogs_error("[%s:%d] Invalid HTTP URI [%s]",
-                            pcf_ue->supi, sess->psi, message->h.uri);
+                            pcf_ue_sm->supi, sess->psi, message->h.uri);
                     ogs_assert(true ==
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
@@ -111,17 +128,31 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             }
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_POLICYAUTHORIZATION)
+        case OpenAPI_service_name_npcf_policyauthorization:
             if (message->h.resource.component[1]) {
                 if (message->h.resource.component[2]) {
                     SWITCH(message->h.resource.component[2])
                     CASE(OGS_SBI_RESOURCE_NAME_DELETE)
-                        handled = pcf_npcf_policyauthorization_handle_delete(
-                                sess, e->app, stream, message);
+                        SWITCH(message->h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_POST)
+                            handled =
+                                pcf_npcf_policyauthorization_handle_delete(
+                                    sess, e->app, stream, message);
+                            break;
+                        DEFAULT
+                            ogs_error("[%s:%d] Invalid HTTP method [%s] for "
+                                    "/delete", pcf_ue_sm->supi, sess->psi,
+                                    message->h.method);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                    OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,
+                                    message, "Invalid HTTP method",
+                                    message->h.uri, NULL));
+                        END
                         break;
                     DEFAULT
                         ogs_error("[%s:%d] Invalid resource name [%s]",
-                                pcf_ue->supi, sess->psi,
+                                pcf_ue_sm->supi, sess->psi,
                                 message->h.resource.component[2]);
                         ogs_assert(true ==
                             ogs_sbi_server_send_error(stream,
@@ -136,7 +167,7 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         break;
                     DEFAULT
                         ogs_error("[%s:%d] Unknown method [%s]",
-                                pcf_ue->supi, sess->psi, message->h.method);
+                                pcf_ue_sm->supi, sess->psi, message->h.method);
                         ogs_assert(true ==
                             ogs_sbi_server_send_error(stream,
                                 OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
@@ -151,7 +182,7 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                     break;
                 DEFAULT
                     ogs_error("[%s:%d] Unknown method [%s]",
-                            pcf_ue->supi, sess->psi, message->h.method);
+                            pcf_ue_sm->supi, sess->psi, message->h.method);
                     ogs_assert(true ==
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
@@ -160,11 +191,11 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             }
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
-                        pcf_ue->supi, sess->psi, message->h.service.name);
+                        pcf_ue_sm->supi, sess->psi, message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     case OGS_EVENT_SBI_CLIENT:
@@ -181,8 +212,10 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NUDR_DR)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nudr_dr:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_POLICY_DATA)
                 SWITCH(message->h.resource.component[1])
@@ -192,42 +225,44 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         if (message->res_status ==
                                 OGS_SBI_HTTP_STATUS_NOT_FOUND) {
                             ogs_warn("[%s:%d] Cannot find SUPI [%d]",
-                                pcf_ue->supi, sess->psi, message->res_status);
-                            /*
-                             * TS29.512
-                             * 4.2.2.2 SM Policy Association establishment
-                             *
-                             * If the user information received within the "supi"
-                             * attribute is unknown, the PCF shall reject the
-                             * request with an HTTP "400 Bad Request" response
-                             * message including the "cause" attribute of the
-                             * ProblemDetails data structure set to "USER_UNKNOWN".
-                             */
+                                pcf_ue_sm->supi,
+                                sess->psi, message->res_status);
+                        /*
+                         * TS29.512
+                         * 4.2.2.2 SM Policy Association establishment
+                         *
+                         * If the user information received within the "supi"
+                         * attribute is unknown, the PCF shall reject the
+                         * request with an HTTP "400 Bad Request" response
+                         * message including the "cause" attribute of the
+                         * ProblemDetails data structure set to "USER_UNKNOWN".
+                         */
                             ogs_assert(true ==
                                 ogs_sbi_server_send_error(
                                     stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                                     NULL, "End user is unknown to the PCF",
-                                    pcf_ue->supi, "USER_UNKNOWN"));
+                                    pcf_ue_sm->supi, "USER_UNKNOWN"));
                         } else {
                             ogs_error("[%s:%d] HTTP response error [%d]",
-                                pcf_ue->supi, sess->psi, message->res_status);
-                            /*
-                             * TS29.512
-                             * 4.2.2.2 SM Policy Association establishment
-                             *
-                             * If the PCF, based on local configuration and/or
-                             * operator policies, denies the creation of the
-                             * Individual SM Policy resource, the PCF may reject
-                             * the request and include in an HTTP "403 Forbidden"
-                             * response message the "cause" attribute of the
-                             * ProblemDetails data structure set to
-                             * "POLICY_CONTEXT_DENIED".
-                             */
+                                pcf_ue_sm->supi,
+                                sess->psi, message->res_status);
+                        /*
+                         * TS29.512
+                         * 4.2.2.2 SM Policy Association establishment
+                         *
+                         * If the PCF, based on local configuration and/or
+                         * operator policies, denies the creation of the
+                         * Individual SM Policy resource, the PCF may reject
+                         * the request and include in an HTTP "403 Forbidden"
+                         * response message the "cause" attribute of the
+                         * ProblemDetails data structure set to
+                         * "POLICY_CONTEXT_DENIED".
+                         */
                             ogs_assert(true ==
                                 ogs_sbi_server_send_error(
                                     stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
                                     NULL, "HTTP response error",
-                                    pcf_ue->supi, "POLICY_CONTEXT_DENIED"));
+                                    pcf_ue_sm->supi, "POLICY_CONTEXT_DENIED"));
                         }
                         break;
                     }
@@ -237,7 +272,7 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 
                 DEFAULT
                     ogs_error("[%s:%d] Invalid resource name [%s]",
-                            pcf_ue->supi, sess->psi,
+                            pcf_ue_sm->supi, sess->psi,
                             message->h.resource.component[1]);
                     ogs_assert_if_reached();
                 END
@@ -245,13 +280,13 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 
             DEFAULT
                 ogs_error("[%s:%d] Invalid resource name [%s]",
-                        pcf_ue->supi, sess->psi,
+                        pcf_ue_sm->supi, sess->psi,
                         message->h.resource.component[0]);
                 ogs_assert_if_reached();
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NBSF_MANAGEMENT)
+        case OpenAPI_service_name_nbsf_management:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_PCF_BINDINGS)
                 if (message->h.resource.component[1]) {
@@ -260,7 +295,7 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         if (message->res_status !=
                                 OGS_SBI_HTTP_STATUS_NO_CONTENT) {
                             ogs_warn("[%s:%d] HTTP response error [%d]",
-                                pcf_ue->supi, sess->psi, message->res_status);
+                                pcf_ue_sm->supi, sess->psi, message->res_status);
 
 /*
  * The PCfBindings resource for that UE may not exist in the BSF
@@ -272,7 +307,8 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                             ogs_assert(true ==
                                 ogs_sbi_server_send_error(stream,
                                     message->res_status,
-                                    NULL, "HTTP response error", pcf_ue->supi));
+                                    NULL, "HTTP response error",
+                                    pcf_ue_sm->supi));
                             OGS_FSM_TRAN(s, pcf_sm_state_exception);
                             break;
 #endif
@@ -284,19 +320,34 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         break;
                     DEFAULT
                         ogs_error("[%s:%d] Unknown method [%s]",
-                                pcf_ue->supi, sess->psi, message->h.method);
+                                pcf_ue_sm->supi, sess->psi, message->h.method);
                         ogs_assert_if_reached();
                     END
                     break;
                 } else {
                     SWITCH(message->h.method)
                     CASE(OGS_SBI_HTTP_METHOD_POST)
-                        pcf_nbsf_management_handle_register(
-                                sess, stream, message);
+                        if (message->res_status ==
+                                OGS_SBI_HTTP_STATUS_CREATED) {
+                            pcf_nbsf_management_handle_register(
+                                    sess, stream, message);
+                        } else {
+                            ogs_error("[%s:%d] HTTP response error [%d]",
+                                pcf_ue_sm->supi,
+                                sess->psi, message->res_status);
+
+                            /*
+                             * Send Response
+                             * for SM Policy Association establishment
+                             */
+                            ogs_expect(true ==
+                                pcf_sbi_send_smpolicycontrol_create_response(
+                                    sess, stream));
+                        }
                         break;
                     DEFAULT
                         ogs_error("[%s:%d] Unknown method [%s]",
-                                pcf_ue->supi, sess->psi, message->h.method);
+                                pcf_ue_sm->supi, sess->psi, message->h.method);
                         ogs_assert_if_reached();
                     END
                 }
@@ -304,29 +355,29 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 
             DEFAULT
                 ogs_error("[%s:%d] Invalid resource name [%s]",
-                        pcf_ue->supi, sess->psi,
+                        pcf_ue_sm->supi, sess->psi,
                         message->h.resource.component[0]);
                 ogs_assert_if_reached();
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
-                        pcf_ue->supi, sess->psi, message->h.service.name);
+                        pcf_ue_sm->supi, sess->psi, message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     default:
         ogs_error("[%s:%d] Unknown event %s",
-                pcf_ue->supi, sess->psi, pcf_event_get_name(e));
+                pcf_ue_sm->supi, sess->psi, pcf_event_get_name(e));
         break;
     }
 }
 
 void pcf_sm_state_deleted(ogs_fsm_t *s, pcf_event_t *e)
 {
-    pcf_ue_t *pcf_ue = NULL;
+    pcf_ue_sm_t *pcf_ue_sm = NULL;
     pcf_sess_t *sess = NULL;
 
     ogs_assert(s);
@@ -336,12 +387,13 @@ void pcf_sm_state_deleted(ogs_fsm_t *s, pcf_event_t *e)
 
     sess = pcf_sess_find_by_id(e->sess_id);
     ogs_assert(sess);
-    pcf_ue = pcf_ue_find_by_id(sess->pcf_ue_id);
-    ogs_assert(pcf_ue);
+    pcf_ue_sm = pcf_ue_sm_find_by_id(sess->pcf_ue_sm_id);
+    ogs_assert(pcf_ue_sm);
 
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
-        pcf_metrics_inst_by_slice_add(&pcf_ue->guami.plmn_id,
+        pcf_metrics_inst_by_slice_add(
+                sess->home.presence == true ? &sess->home.plmn_id : NULL,
                 &sess->s_nssai, PCF_METR_GAUGE_PA_SESSIONNBR, -1);
         break;
 
@@ -350,14 +402,14 @@ void pcf_sm_state_deleted(ogs_fsm_t *s, pcf_event_t *e)
 
     default:
         ogs_error("[%s:%d] Unknown event %s",
-                pcf_ue->supi, sess->psi, pcf_event_get_name(e));
+                pcf_ue_sm->supi, sess->psi, pcf_event_get_name(e));
         break;
     }
 }
 
 void pcf_sm_state_exception(ogs_fsm_t *s, pcf_event_t *e)
 {
-    pcf_ue_t *pcf_ue = NULL;
+    pcf_ue_sm_t *pcf_ue_sm = NULL;
     pcf_sess_t *sess = NULL;
 
     ogs_assert(s);
@@ -367,12 +419,13 @@ void pcf_sm_state_exception(ogs_fsm_t *s, pcf_event_t *e)
 
     sess = pcf_sess_find_by_id(e->sess_id);
     ogs_assert(sess);
-    pcf_ue = pcf_ue_find_by_id(sess->pcf_ue_id);
-    ogs_assert(pcf_ue);
+    pcf_ue_sm = pcf_ue_sm_find_by_id(sess->pcf_ue_sm_id);
+    ogs_assert(pcf_ue_sm);
 
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
-        pcf_metrics_inst_by_slice_add(&pcf_ue->guami.plmn_id,
+        pcf_metrics_inst_by_slice_add(
+                sess->home.presence == true ? &sess->home.plmn_id : NULL,
                 &sess->s_nssai, PCF_METR_GAUGE_PA_SESSIONNBR, -1);
         break;
 
@@ -381,7 +434,7 @@ void pcf_sm_state_exception(ogs_fsm_t *s, pcf_event_t *e)
 
     default:
         ogs_error("[%s:%d] Unknown event %s",
-                pcf_ue->supi, sess->psi, pcf_event_get_name(e));
+                pcf_ue_sm->supi, sess->psi, pcf_event_get_name(e));
         break;
     }
 }

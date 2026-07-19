@@ -126,8 +126,13 @@ ogs_pkbuf_t *gmm_build_registration_accept(amf_ue_t *amf_ue)
     registration_accept->presencemask |=
         OGS_NAS_5GS_REGISTRATION_ACCEPT_5GS_NETWORK_FEATURE_SUPPORT_PRESENT;
     network_feature_support->length = 2;
-    network_feature_support->
-        ims_voice_over_ps_session_over_3gpp_access_indicator = 1;
+    if (ogs_global_conf()->parameter.no_ims == true) {
+        network_feature_support->
+            ims_voice_over_ps_session_over_3gpp_access_indicator = 0;
+    } else {
+        network_feature_support->
+            ims_voice_over_ps_session_over_3gpp_access_indicator = 1;
+    }
 
     /* Set T3512 : Mandatory in Open5GS */
     ogs_assert(amf_self()->time.t3512.value);
@@ -425,9 +430,6 @@ ogs_pkbuf_t *gmm_build_security_mode_command(amf_ue_t *amf_ue)
         OGS_NAS_EXTENDED_PROTOCOL_DISCRIMINATOR_5GMM;
     message.gmm.h.message_type = OGS_NAS_5GS_SECURITY_MODE_COMMAND;
 
-    amf_ue->selected_int_algorithm = amf_selected_int_algorithm(amf_ue);
-    amf_ue->selected_enc_algorithm = amf_selected_enc_algorithm(amf_ue);
-
     selected_nas_security_algorithms->type_of_integrity_protection_algorithm =
         amf_ue->selected_int_algorithm;
     selected_nas_security_algorithms->type_of_ciphering_algorithm =
@@ -474,12 +476,8 @@ ogs_pkbuf_t *gmm_build_security_mode_command(amf_ue_t *amf_ue)
     additional_security_information->
         retransmission_of_initial_nas_message_request = 1;
 
-    if (amf_ue->selected_int_algorithm == OGS_NAS_SECURITY_ALGORITHMS_EIA0) {
-        ogs_error("Encrypt[0x%x] can be skipped with NEA0, "
-            "but Integrity[0x%x] cannot be bypassed with NIA0",
-            amf_ue->selected_enc_algorithm, amf_ue->selected_int_algorithm);
-        return NULL;
-    }
+    ogs_assert(amf_ue->selected_int_algorithm !=
+            OGS_NAS_SECURITY_ALGORITHMS_EIA0);
 
     ogs_kdf_nas_5gs(OGS_KDF_NAS_INT_ALG, amf_ue->selected_int_algorithm,
             amf_ue->kamf, amf_ue->knas_int);

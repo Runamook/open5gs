@@ -83,6 +83,7 @@ int ausf_context_parse_config(void)
     int rv;
     yaml_document_t *document = NULL;
     ogs_yaml_iter_t root_iter;
+    int idx = 0;
 
     document = ogs_app()->document;
     ogs_assert(document);
@@ -94,7 +95,8 @@ int ausf_context_parse_config(void)
     while (ogs_yaml_iter_next(&root_iter)) {
         const char *root_key = ogs_yaml_iter_key(&root_iter);
         ogs_assert(root_key);
-        if (!strcmp(root_key, "ausf")) {
+        if ((!strcmp(root_key, "ausf")) &&
+            (idx++ == ogs_app()->config_section_id)) {
             ogs_yaml_iter_t ausf_iter;
             ogs_yaml_iter_recurse(&root_iter, &ausf_iter);
             while (ogs_yaml_iter_next(&ausf_iter)) {
@@ -173,12 +175,13 @@ void ausf_ue_remove(ausf_ue_t *ausf_ue)
     ogs_free(ausf_ue->ctx_id);
 
     ogs_assert(ausf_ue->suci);
-    ogs_hash_set(self.suci_hash, ausf_ue->suci, strlen(ausf_ue->suci), NULL);
+    ogs_hash_unset_if_owner(self.suci_hash,
+            ausf_ue->suci, strlen(ausf_ue->suci), ausf_ue);
     ogs_free(ausf_ue->suci);
 
     if (ausf_ue->supi) {
-        ogs_hash_set(self.supi_hash,
-                ausf_ue->supi, strlen(ausf_ue->supi), NULL);
+        ogs_hash_unset_if_owner(self.supi_hash,
+                ausf_ue->supi, strlen(ausf_ue->supi), ausf_ue);
         ogs_free(ausf_ue->supi);
     }
 

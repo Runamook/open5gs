@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -206,6 +206,7 @@ int amf_context_parse_config(void)
     int rv;
     yaml_document_t *document = NULL;
     ogs_yaml_iter_t root_iter;
+    int idx = 0;
 
     document = ogs_app()->document;
     ogs_assert(document);
@@ -217,7 +218,8 @@ int amf_context_parse_config(void)
     while (ogs_yaml_iter_next(&root_iter)) {
         const char *root_key = ogs_yaml_iter_key(&root_iter);
         ogs_assert(root_key);
-        if (!strcmp(root_key, "amf")) {
+        if ((!strcmp(root_key, "amf")) &&
+            (idx++ == ogs_app()->config_section_id)) {
             ogs_yaml_iter_t amf_iter;
             ogs_yaml_iter_recurse(&root_iter, &amf_iter);
             while (ogs_yaml_iter_next(&amf_iter)) {
@@ -757,7 +759,7 @@ int amf_context_parse_config(void)
                                         s_nssai->sst = atoi(sst);
                                         if (sd)
                                             s_nssai->sd =
-                                                ogs_uint24_from_string(
+                                                ogs_uint24_from_string_hexadecimal(
                                                         (char*)sd);
                                         else
                                             s_nssai->sd.v =
@@ -975,12 +977,14 @@ int amf_context_parse_config(void)
                                 ogs_yaml_iter_value(&network_name_iter);
                             uint8_t size = strlen(c_network_name);
                             uint8_t i;
-                            for (i = 0;i<size;i++) {
+                            for (i = 0; i < size &&
+                                 (((i * 2) + 1) <
+                                  (OGS_NAS_MAX_NETWORK_NAME_LEN - 1));
+                                 i++) {
                                 /* Workaround to convert the ASCII to USC-2 */
-                                network_full_name->name[i*2] = 0;
-                                network_full_name->name[(i*2)+1] =
+                                network_full_name->name[i * 2] = 0;
+                                network_full_name->name[i * 2 + 1] =
                                     c_network_name[i];
-
                             }
                             network_full_name->length = size*2+1;
                             network_full_name->coding_scheme = 1;
@@ -992,12 +996,14 @@ int amf_context_parse_config(void)
                                 ogs_yaml_iter_value(&network_name_iter);
                             uint8_t size = strlen(c_network_name);
                             uint8_t i;
-                            for (i = 0;i<size;i++) {
+                            for (i = 0; i < size &&
+                                 (((i * 2) + 1) <
+                                  (OGS_NAS_MAX_NETWORK_NAME_LEN - 1));
+                                 i++) {
                                 /* Workaround to convert the ASCII to USC-2 */
-                                network_short_name->name[i*2] = 0;
-                                network_short_name->name[(i*2)+1] =
+                                network_short_name->name[i * 2] = 0;
+                                network_short_name->name[i * 2 + 1] =
                                     c_network_name[i];
-
                             }
                             network_short_name->length = size*2+1;
                             network_short_name->coding_scheme = 1;
@@ -1102,16 +1108,20 @@ int amf_context_nf_info(void)
         nf_info = ogs_sbi_nf_info_add(
                 &nf_instance->nf_info_list, OpenAPI_nf_type_AMF);
         ogs_assert(nf_info);
-        nf_info->amf.amf_set_id = self.served_guami[next_new_i].amf_id.set2;
-        nf_info->amf.amf_region_id = self.served_guami[next_new_i].amf_id.region;
+
+        nf_info->amf.amf_set_id =
+                ogs_amf_set_id(&self.served_guami[next_new_i].amf_id);
+        nf_info->amf.amf_region_id =
+                ogs_amf_region_id(&self.served_guami[next_new_i].amf_id);
+
         next_found = false;
         info_i = 0;
         for (served_i = next_new_i; served_i <
                 self.num_of_served_guami; served_i++) {
-            if (self.served_guami[served_i].amf_id.set2 ==
-                    nf_info->amf.amf_set_id &&
-                    self.served_guami[served_i].amf_id.region ==
-                nf_info->amf.amf_region_id) {
+            if ((ogs_amf_set_id(&self.served_guami[served_i].amf_id) ==
+                    nf_info->amf.amf_set_id) &&
+                (ogs_amf_region_id(&self.served_guami[served_i].amf_id) ==
+                    nf_info->amf.amf_region_id)) {
                 nf_info->amf.guami[info_i] = self.served_guami[served_i];
                 nf_info->amf.num_of_guami++;
                 info_i++;
@@ -1119,21 +1129,25 @@ int amf_context_nf_info(void)
                 if (!next_found) {
                     int handled_i;
                     for (handled_i = 0; handled_i < served_i; handled_i++) {
-                        if (self.served_guami[handled_i].amf_id.set2 ==
-                                self.served_guami[served_i].amf_id.set2 &&
-                            self.served_guami[handled_i].amf_id.region ==
-                                    self.served_guami[served_i].amf_id.region) {
+                        if ((ogs_amf_set_id(
+                                &self.served_guami[handled_i].amf_id) ==
+                             ogs_amf_set_id(
+                                &self.served_guami[served_i].amf_id)) &&
+                            (ogs_amf_region_id(
+                                &self.served_guami[handled_i].amf_id) ==
+                             ogs_amf_region_id(
+                                &self.served_guami[served_i].amf_id))) {
                             break;
                         }
-                    next_found = true;
-                    next_new_i = served_i;
+                        next_found = true;
+                        next_new_i = served_i;
                     }
                 }
             }
         }
 
-        nf_info->amf.num_of_nr_tai = 0;
-        int i = 0, j = 0, k = 0, info_tai_i = 0;
+
+        int i, j, k;
         for (i = 0; i < self.num_of_served_tai; i++) {
             ogs_5gs_tai0_list_t *list0 = &self.served_tai[i].list0;
             ogs_5gs_tai1_list_t *list1 = &self.served_tai[i].list1;
@@ -1142,47 +1156,72 @@ int amf_context_nf_info(void)
             for (j = 0; list0->tai[j].num; j++) {
                 for (k = 0; k < list0->tai[j].num; k++) {
                     for (served_i = 0; served_i < info_i; served_i++) {
+                        if (nf_info->amf.num_of_nr_tai >= OGS_MAX_NUM_OF_TAI) {
+                            ogs_warn("Maximum number of TAI reached");
+                            break;
+                        }
+
                         if (ogs_plmn_id_hexdump(&list0->tai[j].plmn_id) ==
-                                ogs_plmn_id_hexdump(
-                                    &nf_info->amf.guami[served_i].plmn_id)) {
-                            nf_info->amf.nr_tai[info_tai_i].plmn_id =
-                                    list0->tai[j].plmn_id;
-                            nf_info->amf.nr_tai[info_tai_i].tac =
-                                    list0->tai[j].tac[k];
+                            ogs_plmn_id_hexdump(&nf_info->amf.guami[served_i].plmn_id)) {
+                            ogs_5gs_tai_t *tai =
+                                &nf_info->amf.nr_tai[
+                                    nf_info->amf.num_of_nr_tai];
+
+                            tai->plmn_id = list0->tai[j].plmn_id;
+                            tai->tac = list0->tai[j].tac[k];
+
                             nf_info->amf.num_of_nr_tai++;
-                            info_tai_i++;
                         }
                     }
                 }
             }
+
+
             for (j = 0; list1->tai[j].num; j++) {
-                for (k = 0; k < list1->tai[j].num; k++) {
-                    for (served_i = 0; served_i < info_i; served_i++) {
-                        if (ogs_plmn_id_hexdump(&list1->tai[j].plmn_id) ==
-                                ogs_plmn_id_hexdump(
-                                    &nf_info->amf.guami[served_i].plmn_id)) {
-                            nf_info->amf.nr_tai[info_tai_i].plmn_id =
-                                    list1->tai[j].plmn_id;
-                            nf_info->amf.nr_tai[info_tai_i].tac.v =
-                                    list1->tai[j].tac.v+k;
-                            nf_info->amf.num_of_nr_tai++;
-                            info_tai_i++;
-                        }
+                for (served_i = 0; served_i < info_i; served_i++) {
+                    if (nf_info->amf.num_of_nr_tai_range >= OGS_MAX_NUM_OF_TAI) {
+                        ogs_warn("Maximum number of TAI range reached");
+                        break;
+                    }
+
+                    if (ogs_plmn_id_hexdump(&list1->tai[j].plmn_id) ==
+                        ogs_plmn_id_hexdump(&nf_info->amf.guami[served_i].plmn_id)) {
+                        nf_info->amf.nr_tai_range[
+                            nf_info->amf.num_of_nr_tai_range].plmn_id =
+                                list1->tai[j].plmn_id;
+                        nf_info->amf.nr_tai_range[
+                            nf_info->amf.num_of_nr_tai_range].start[0].v =
+                                list1->tai[j].tac.v;
+                        nf_info->amf.nr_tai_range[
+                            nf_info->amf.num_of_nr_tai_range].end[0].v =
+                                list1->tai[j].tac.v + list1->tai[j].num - 1;
+                        /* Supported is only 1 TAC range per TAI */
+                        nf_info->amf.nr_tai_range[
+                            nf_info->amf.num_of_nr_tai_range].num_of_tac_range = 1;
+
+                        nf_info->amf.num_of_nr_tai_range++;
                     }
                 }
             }
+
             if (list2->num) {
                 for (j = 0; j < list2->num; j++) {
                     for (served_i = 0; served_i < info_i; served_i++) {
+                        if (nf_info->amf.num_of_nr_tai >= OGS_MAX_NUM_OF_TAI) {
+                            ogs_warn("Maximum number of TAI reached");
+                            break;
+                        }
+
                         if (ogs_plmn_id_hexdump(&list2->tai[j].plmn_id) ==
-                                ogs_plmn_id_hexdump(
-                                    &nf_info->amf.guami[served_i].plmn_id)) {
-                            nf_info->amf.nr_tai[info_tai_i].plmn_id =
-                                    list2->tai[j].plmn_id;
-                            nf_info->amf.nr_tai[info_tai_i].tac =
-                                    list2->tai[j].tac;
+                            ogs_plmn_id_hexdump(&nf_info->amf.guami[served_i].plmn_id)) {
+                            ogs_5gs_tai_t *tai =
+                                &nf_info->amf.nr_tai[
+                                    nf_info->amf.num_of_nr_tai];
+
+                            tai->plmn_id = list2->tai[j].plmn_id;
+                            tai->tac = list2->tai[j].tac;
+
                             nf_info->amf.num_of_nr_tai++;
-                            info_tai_i++;
                         }
                     }
                 }
@@ -1256,7 +1295,8 @@ void amf_gnb_remove(amf_gnb_t *gnb)
 
     ogs_hash_set(self.gnb_addr_hash,
             gnb->sctp.addr, sizeof(ogs_sockaddr_t), NULL);
-    ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), NULL);
+    if (gnb->gnb_id_presence == true)
+        ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), NULL);
 
     ogs_sctp_flush_and_destroy(&gnb->sctp);
 
@@ -1288,14 +1328,23 @@ amf_gnb_t *amf_gnb_find_by_gnb_id(uint32_t gnb_id)
     return (amf_gnb_t *)ogs_hash_get(self.gnb_id_hash, &gnb_id, sizeof(gnb_id));
 }
 
-int amf_gnb_set_gnb_id(amf_gnb_t *gnb, uint32_t gnb_id)
+int amf_gnb_set_gnb_id(amf_gnb_t *gnb, uint32_t gnb_id, uint8_t gnb_id_length)
 {
     ogs_assert(gnb);
 
-    ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), NULL);
+    if (gnb_id_length < 22 || gnb_id_length > 32) {
+        ogs_error("Invalid gNB-ID length[%d]", gnb_id_length);
+        return OGS_ERROR;
+    }
+
+    if (gnb->gnb_id_presence == true)
+        ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), NULL);
 
     gnb->gnb_id = gnb_id;
+    gnb->gnb_id_length = gnb_id_length;
     ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), gnb);
+
+    gnb->gnb_id_presence = true;
 
     return OGS_OK;
 }
@@ -1326,6 +1375,12 @@ ran_ue_t *ran_ue_add(amf_gnb_t *gnb, uint64_t ran_ue_ngap_id)
     ran_ue_t *ran_ue = NULL;
 
     ogs_assert(gnb);
+
+    if ((gnb->max_num_of_ostreams - 1) < 1) {
+        ogs_error("gnb->max_num_of_ostreams too small (%d)",
+                gnb->max_num_of_ostreams);
+        return NULL;
+    }
 
     ogs_pool_id_calloc(&ran_ue_pool, &ran_ue);
     if (ran_ue == NULL) {
@@ -1403,6 +1458,53 @@ void ran_ue_switch_to_gnb(ran_ue_t *ran_ue, amf_gnb_t *new_gnb)
 
     /* Switch to gnb */
     ran_ue->gnb_id = new_gnb->id;
+
+    /*
+     * Re-bind the SCTP output stream to the target gNB if needed.
+     *
+     * ran_ue->gnb_ostream_id was allocated in ran_ue_add() in the range
+     * [1, max_num_of_ostreams-1] negotiated with the SOURCE gNB. gNBs
+     * from different vendors can negotiate a different number of SCTP
+     * streams; when the target gNB negotiated fewer streams, the
+     * carried-over stream id is out of range on the new association and
+     * ogs_sctp_senddata() fails with EINVAL(22), so e.g. the
+     * PathSwitchRequestAcknowledge is lost silently.
+     *
+     * The stream id is re-allocated from the target gNB's range only
+     * when it is out of range, so a handover between gNBs that
+     * negotiated the same stream count is not affected.
+     */
+    if (new_gnb->max_num_of_ostreams < 2) {
+        /*
+         * The target gNB negotiated a single SCTP stream: there is no
+         * UE-associated stream available (stream 0 is reserved for the
+         * sole use of non-UE-associated signalling, 3GPP TS 38.412
+         * clause 7, and ran_ue_add() rejects such a gNB as well).
+         * Keep the current stream id unchanged; UE-associated
+         * signalling toward this gNB will fail to be delivered, as
+         * before this change.
+         */
+        ogs_error("Target gNB has no UE-associated SCTP stream "
+                "[MAX:%d]; UE-associated signalling cannot be delivered",
+                new_gnb->max_num_of_ostreams);
+        return;
+    }
+
+    if (ran_ue->gnb_ostream_id >= new_gnb->max_num_of_ostreams) {
+        uint16_t old_ostream_id = ran_ue->gnb_ostream_id;
+
+        ran_ue->gnb_ostream_id =
+            OGS_NEXT_ID(new_gnb->ostream_id, 1,
+                    new_gnb->max_num_of_ostreams-1);
+
+        ogs_warn("SCTP output stream re-bound to the target gNB "
+                "[OLD:%d NEW:%d MAX:%d] "
+                "RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld]",
+                old_ostream_id, ran_ue->gnb_ostream_id,
+                new_gnb->max_num_of_ostreams,
+                (long long)ran_ue->ran_ue_ngap_id,
+                (long long)ran_ue->amf_ue_ngap_id);
+    }
 }
 
 ran_ue_t *ran_ue_find_by_ran_ue_ngap_id(
@@ -1509,7 +1611,7 @@ void amf_ue_confirm_guti(amf_ue_t *amf_ue)
      * by performing the generic UE configuration update procedure.
      */
 
-    /* Copying from Current to Next Guti */
+    /* Copying from Next to Current Guti */
     amf_ue->current.m_tmsi = amf_ue->next.m_tmsi;
     memcpy(&amf_ue->current.guti,
             &amf_ue->next.guti, sizeof(ogs_nas_5gs_guti_t));
@@ -1622,10 +1724,16 @@ amf_ue_t *amf_ue_add(ran_ue_t *ran_ue)
             OGS_SBI_NPCF_AM_POLICY_CONTROL_UE_AMBR_AUTHORIZATION);
 
     amf_ue->rat_restrictions = OpenAPI_list_create();
+    amf_ue->to_release_session_list = OpenAPI_list_create();
 
     ogs_list_init(&amf_ue->sess_list);
 
     /* Initialization */
+    amf_ue->gnb_ostream_id = ran_ue->gnb_ostream_id;
+    memcpy(&amf_ue->nr_tai, &ran_ue->saved.nr_tai, sizeof(ogs_5gs_tai_t));
+    memcpy(&amf_ue->nr_cgi, &ran_ue->saved.nr_cgi, sizeof(ogs_nr_cgi_t));
+    amf_ue->nr_cgi_gnb_id_length = ran_ue->saved.nr_cgi_gnb_id_length;
+
     amf_ue->guami = &amf_self()->served_guami[0];
     amf_ue->nas.access_type = OGS_ACCESS_TYPE_3GPP;
     amf_ue->nas.amf.ksi = OGS_NAS_KSI_NO_KEY_IS_AVAILABLE;
@@ -1661,24 +1769,27 @@ void amf_ue_remove(amf_ue_t *amf_ue)
     AMF_UE_CLEAR_5GSM_MESSAGE(amf_ue);
 
     OpenAPI_list_free(amf_ue->rat_restrictions);
+    OpenAPI_list_free(amf_ue->to_release_session_list);
 
     /* Remove all session context */
     amf_sess_remove_all(amf_ue);
 
     if (amf_ue->current.m_tmsi) {
-        ogs_hash_set(self.guti_ue_hash,
-                &amf_ue->current.guti, sizeof(ogs_nas_5gs_guti_t), NULL);
+        ogs_hash_unset_if_owner(self.guti_ue_hash,
+                &amf_ue->current.guti, sizeof(ogs_nas_5gs_guti_t), amf_ue);
         ogs_assert(amf_m_tmsi_free(amf_ue->current.m_tmsi) == OGS_OK);
     }
     if (amf_ue->next.m_tmsi) {
         ogs_assert(amf_m_tmsi_free(amf_ue->next.m_tmsi) == OGS_OK);
     }
     if (amf_ue->suci) {
-        ogs_hash_set(self.suci_hash, amf_ue->suci, strlen(amf_ue->suci), NULL);
+        ogs_hash_unset_if_owner(self.suci_hash,
+                amf_ue->suci, strlen(amf_ue->suci), amf_ue);
         ogs_free(amf_ue->suci);
     }
     if (amf_ue->supi) {
-        ogs_hash_set(self.supi_hash, amf_ue->supi, strlen(amf_ue->supi), NULL);
+        ogs_hash_unset_if_owner(self.supi_hash,
+                amf_ue->supi, strlen(amf_ue->supi), amf_ue);
         ogs_free(amf_ue->supi);
     }
 
@@ -1728,7 +1839,7 @@ void amf_ue_remove(amf_ue_t *amf_ue)
                 ogs_list_count(&amf_ue->sbi.xact_list));
     ogs_sbi_object_free(&amf_ue->sbi);
 
-    amf_ue_deassociate(amf_ue);
+    amf_ue->ran_ue_id = OGS_INVALID_POOL_ID;
 
     ogs_pool_id_free(&amf_ue_pool, amf_ue);
 
@@ -1826,8 +1937,17 @@ amf_ue_t *amf_ue_find_by_message(ogs_nas_5gs_message_t *message)
 
         switch (mobile_identity_header->type) {
         case OGS_NAS_5GS_MOBILE_IDENTITY_SUCI:
+            if (mobile_identity->length <
+                    (OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1)) {
+                ogs_error("Too short SUCI Mobile Identity [%d:%d]",
+                        mobile_identity->length,
+                        OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1);
+                return NULL;
+            }
+
             mobile_identity_suci =
                 (ogs_nas_5gs_mobile_identity_suci_t *)mobile_identity->buffer;
+            ogs_assert(mobile_identity_suci);
 
             if (mobile_identity_suci->h.supi_format !=
                     OGS_NAS_5GS_SUPI_FORMAT_IMSI) {
@@ -1863,6 +1983,14 @@ amf_ue_t *amf_ue_find_by_message(ogs_nas_5gs_message_t *message)
             ogs_free(suci);
             break;
         case OGS_NAS_5GS_MOBILE_IDENTITY_GUTI:
+            if (mobile_identity->length <
+                    sizeof(ogs_nas_5gs_mobile_identity_guti_t)) {
+                ogs_error("Too short 5G-GUTI Mobile Identity [%d:%d]",
+                        mobile_identity->length,
+                        (int)sizeof(ogs_nas_5gs_mobile_identity_guti_t));
+                return NULL;
+            }
+
             mobile_identity_guti =
                 (ogs_nas_5gs_mobile_identity_guti_t *)mobile_identity->buffer;
             ogs_assert(mobile_identity_guti);
@@ -1901,6 +2029,14 @@ amf_ue_t *amf_ue_find_by_message(ogs_nas_5gs_message_t *message)
 
         switch (mobile_identity_header->type) {
         case OGS_NAS_5GS_MOBILE_IDENTITY_S_TMSI:
+            if (mobile_identity->length <
+                    sizeof(ogs_nas_5gs_mobile_identity_s_tmsi_t)) {
+                ogs_error("Too short 5G-S-TMSI Mobile Identity [%d:%d]",
+                        mobile_identity->length,
+                        (int)sizeof(ogs_nas_5gs_mobile_identity_s_tmsi_t));
+                return NULL;
+            }
+
             mobile_identity_s_tmsi =
                 (ogs_nas_5gs_mobile_identity_s_tmsi_t *)mobile_identity->buffer;
             ogs_assert(mobile_identity_s_tmsi);
@@ -1948,6 +2084,14 @@ amf_ue_t *amf_ue_find_by_message(ogs_nas_5gs_message_t *message)
 
         switch (mobile_identity_header->type) {
         case OGS_NAS_5GS_MOBILE_IDENTITY_GUTI:
+            if (mobile_identity->length <
+                    sizeof(ogs_nas_5gs_mobile_identity_guti_t)) {
+                ogs_error("Too short 5G-GUTI Mobile Identity [%d:%d]",
+                        mobile_identity->length,
+                        (int)sizeof(ogs_nas_5gs_mobile_identity_guti_t));
+                return NULL;
+            }
+
             mobile_identity_guti =
                 (ogs_nas_5gs_mobile_identity_guti_t *)mobile_identity->buffer;
             ogs_assert(mobile_identity_guti);
@@ -2071,15 +2215,145 @@ amf_ue_t *amf_ue_find_by_ue_context_id(char *ue_context_id)
     return amf_ue;
 }
 
+/*
+ * Release an OLD amf_ue that collides with a freshly registering amf_ue on
+ * one of the UE indexes, moving any session context to the NEW amf_ue.
+ *
+ * Reached from two complementary detection points:
+ *
+ *   - amf_ue_set_suci(): the UE re-attached re-using the SAME SUCI, so the
+ *     old context is found via suci_hash (delete-path collision).
+ *
+ *   - amf_ue_set_supi(): the UE re-attached with a FRESH SUCI (USIM-toggle,
+ *     post-deregistration timer, flight-mode, push-driven re-registration,
+ *     PoC radio attach loop), so amf_ue_set_suci() could NOT detect it
+ *     (suci_hash miss). The old context is only discovered later, once
+ *     AKA-Auth reveals the SUPI and supi_hash still points at the stale
+ *     slot. Without this the slot leaks until the mobile-reachable timer
+ *     expires (create-path collision).
+ *
+ * Unifying the two paths here makes them behave identically, mirroring the
+ * SMF-side unification of the IMSI/SUPI indexes (commit eeeef3d1b).
+ */
+static void amf_ue_release_old_context(
+        amf_ue_t *amf_ue, amf_ue_t *old_amf_ue, const char *display)
+{
+    amf_sess_t *old_sess = NULL;
+
+    ogs_assert(amf_ue);
+    ogs_assert(old_amf_ue);
+    ogs_assert(amf_ue != old_amf_ue);
+    ogs_assert(display);
+
+    ogs_warn("[%s] OLD UE Context Release", display);
+    if (CM_CONNECTED(old_amf_ue)) {
+        ran_ue_t *ran_ue = ran_ue_find_by_id(old_amf_ue->ran_ue_id);
+        ran_ue_t *ran_ue_holding = NULL;
+
+        /*
+         * Keep the old NG context until the new registration is
+         * authenticated. CLEAR_NG_CONTEXT(amf_ue) will then send
+         * UEContextReleaseCommand to the old NG-RAN context.
+         *
+         * Do not use HOLDING_NG_CONTEXT(old_amf_ue) here: that macro
+         * stores the holding id in old_amf_ue, but this function
+         * removes old_amf_ue below after moving the session context
+         * to the new amf_ue.
+         */
+        ogs_warn("[%s] Holding old NG context", display);
+        if (ran_ue) {
+            int r;
+
+            ran_ue_holding =
+                ran_ue_find_by_id(amf_ue->ran_ue_holding_id);
+            if (ran_ue_holding) {
+                ogs_error("[%s] Holding NG context already exists",
+                        display);
+                ogs_error("[%s]    RAN_UE_NGAP_ID[%lld] "
+                        "AMF_UE_NGAP_ID[%lld]",
+                        display,
+                        (long long)ran_ue_holding->ran_ue_ngap_id,
+                        (long long)ran_ue_holding->amf_ue_ngap_id);
+                r = ngap_send_ran_ue_context_release_command(
+                        ran_ue_holding,
+                        NGAP_Cause_PR_nas,
+                        NGAP_CauseNas_normal_release,
+                        NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
+                ogs_expect(r == OGS_OK);
+            } else if (amf_ue->ran_ue_holding_id !=
+                    OGS_INVALID_POOL_ID) {
+                ogs_error("[%s] Holding NG context has already "
+                        "been removed", display);
+            }
+            amf_ue->ran_ue_holding_id = OGS_INVALID_POOL_ID;
+
+            ran_ue->amf_ue_id = OGS_INVALID_POOL_ID;
+
+            ogs_warn("[%s]    RAN_UE_NGAP_ID[%lld] "
+                    "AMF_UE_NGAP_ID[%lld]",
+                    old_amf_ue->suci,
+                    (long long)ran_ue->ran_ue_ngap_id,
+                    (long long)ran_ue->amf_ue_ngap_id);
+
+            ran_ue->ue_ctx_rel_action =
+                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE;
+            ogs_timer_start(ran_ue->t_ng_holding,
+                    amf_timer_cfg(AMF_TIMER_NG_HOLDING)->duration);
+
+            amf_ue->ran_ue_holding_id = old_amf_ue->ran_ue_id;
+            old_amf_ue->ran_ue_id = OGS_INVALID_POOL_ID;
+        } else {
+            ogs_error("[%s] RAN-NG Context has already been removed",
+                        old_amf_ue->suci);
+        }
+    }
+
+    /*
+     * We should delete the AMF-Session Context in the AMF-UE Context.
+     * Otherwise, all unnecessary SESSIONs remain in SMF/UPF.
+     *
+     * In order to do this, AMF-Session Context should be moved from OLD
+     * AMF-UE Context to NEW AMF-UE Context. The stale sessions are then
+     * released towards the SMF through the NEW context's registration flow
+     * (AMF_RELEASE_SM_CONTEXT_REGISTRATION_ACCEPT), each release-completion
+     * draining one session via AMF_SESS_CLEAR().
+     *
+     * Note that we should NOT send Session-Release to the SMF at this
+     * point, and we must NOT amf_ue_remove() old_amf_ue synchronously
+     * after a release dispatch: another SBI Transaction can cause fatal
+     * errors, and a synchronous removal would free the sessions (and their
+     * in-flight sess->sbi.xact_list entries) out from under the SBI layer.
+     * Moving the session list keeps every session object alive and owned
+     * by exactly one amf_ue at all times.
+     */
+
+    ogs_assert(ogs_list_empty(&amf_ue->sess_list));
+
+    /* Phase-1 : Change AMF-UE Context in Session Context */
+    ogs_list_for_each(&old_amf_ue->sess_list, old_sess)
+        old_sess->amf_ue_id = amf_ue->id;
+
+    /* Phase-2 : Move Session Context from OLD to NEW AMF-UE Context */
+    memcpy(&amf_ue->sess_list,
+            &old_amf_ue->sess_list, sizeof(amf_ue->sess_list));
+
+    /* Phase-3 : Clear Session Context in OLD AMF-UE Context */
+    memset(&old_amf_ue->sess_list, 0, sizeof(old_amf_ue->sess_list));
+
+    amf_ue_remove(old_amf_ue);
+}
+
 void amf_ue_set_suci(amf_ue_t *amf_ue,
         ogs_nas_5gs_mobile_identity_t *mobile_identity)
 {
     amf_ue_t *old_amf_ue = NULL;
-    amf_sess_t *old_sess = NULL;
     char *suci = NULL;
 
     ogs_assert(amf_ue);
     ogs_assert(mobile_identity);
+    ogs_assert(mobile_identity->buffer);
+    ogs_assert(mobile_identity->length >=
+            (OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE + 1));
 
     suci = ogs_nas_5gs_suci_from_mobile_identity(mobile_identity);
     ogs_assert(suci);
@@ -2090,54 +2364,14 @@ void amf_ue_set_suci(amf_ue_t *amf_ue,
         /* Check if OLD amf_ue_t is different with NEW amf_ue_t */
         if (ogs_pool_index(&amf_ue_pool, amf_ue) !=
             ogs_pool_index(&amf_ue_pool, old_amf_ue)) {
-            ogs_warn("[%s] OLD UE Context Release", suci);
-            if (CM_CONNECTED(old_amf_ue)) {
-                ran_ue_t *ran_ue = ran_ue_find_by_id(old_amf_ue->ran_ue_id);
-                /* Implcit NG release */
-                ogs_warn("[%s] Implicit NG release", suci);
-                if (ran_ue) {
-                    ogs_warn("[%s]    RAN_UE_NGAP_ID[%lld] "
-                            "AMF_UE_NGAP_ID[%lld]",
-                            old_amf_ue->suci,
-                            (long long)ran_ue->ran_ue_ngap_id,
-                            (long long)ran_ue->amf_ue_ngap_id);
-                    ran_ue_remove(ran_ue);
-                } else {
-                    ogs_error("[%s] RAN-NG Context has already been removed",
-                                old_amf_ue->suci);
-                }
-            }
-
-    /*
-     * We should delete the AMF-Session Context in the AMF-UE Context.
-     * Otherwise, all unnecessary SESSIONs remain in SMF/UPF.
-     *
-     * In order to do this, AMF-Session Context should be moved
-     * from OLD AMF-UE Context to NEW AMF-UE Context.
-     *
-     * If needed, The Session deletion process in NEW-AMF UE context will work.
-     *
-     * Note that we should not send Session-Release to the SMF at this point.
-     * Another SBI Transaction can cause fatal errors.
-     */
-
-            /* Phase-1 : Change AMF-UE Context in Session Context */
-            ogs_list_for_each(&old_amf_ue->sess_list, old_sess)
-                old_sess->amf_ue_id = amf_ue->id;
-
-            /* Phase-2 : Move Session Context from OLD to NEW AMF-UE Context */
-            memcpy(&amf_ue->sess_list,
-                    &old_amf_ue->sess_list, sizeof(amf_ue->sess_list));
-
-            /* Phase-3 : Clear Session Context in OLD AMF-UE Context */
-            memset(&old_amf_ue->sess_list, 0, sizeof(old_amf_ue->sess_list));
-
-            amf_ue_remove(old_amf_ue);
+            /* Same-SUCI re-attach: tear the old context down. */
+            amf_ue_release_old_context(amf_ue, old_amf_ue, suci);
         }
     }
 
     if (amf_ue->suci) {
-        ogs_hash_set(self.suci_hash, amf_ue->suci, strlen(amf_ue->suci), NULL);
+        ogs_hash_unset_if_owner(self.suci_hash,
+                amf_ue->suci, strlen(amf_ue->suci), amf_ue);
         ogs_free(amf_ue->suci);
     }
     amf_ue->suci = suci;
@@ -2149,8 +2383,27 @@ void amf_ue_set_supi(amf_ue_t *amf_ue, char *supi)
     ogs_assert(supi);
 
     if (amf_ue->supi) {
-        ogs_hash_set(self.supi_hash, amf_ue->supi, strlen(amf_ue->supi), NULL);
+        /* Re-assignment: only clear our OWN supi_hash entry if it still
+         * points at us (see ogs_hash_unset_if_owner). */
+        ogs_hash_unset_if_owner(self.supi_hash,
+                amf_ue->supi, strlen(amf_ue->supi), amf_ue);
         ogs_free(amf_ue->supi);
+    } else {
+        /*
+         * First SUPI assignment for this amf_ue.
+         *
+         * Fresh-SUCI re-attach orphan cleanup (create path): if another
+         * amf_ue already holds this SUPI, it is an orphan from a previous
+         * attach cycle that amf_ue_set_suci() could NOT detect, because the
+         * UE re-attached with a fresh SUCI (suci_hash miss). The delete-path
+         * guard keeps the live entry findable but does not reclaim the stale
+         * slot - without this the pool grows by one slot on every fresh-SUCI
+         * re-registration, until the mobile-reachable timer expires. Tear it
+         * down through the same unified path the same-SUCI re-attach uses.
+         */
+        amf_ue_t *old_amf_ue = amf_ue_find_by_supi(supi);
+        if (old_amf_ue && old_amf_ue != amf_ue)
+            amf_ue_release_old_context(amf_ue, old_amf_ue, supi);
     }
     amf_ue->supi = ogs_strdup(supi);
     ogs_assert(amf_ue->supi);
@@ -2186,16 +2439,16 @@ void amf_ue_associate_ran_ue(amf_ue_t *amf_ue, ran_ue_t *ran_ue)
     ran_ue->amf_ue_id = amf_ue->id;
 }
 
-void ran_ue_deassociate(ran_ue_t *ran_ue)
-{
-    ogs_assert(ran_ue);
-    ran_ue->amf_ue_id = OGS_INVALID_POOL_ID;
-}
-
-void amf_ue_deassociate(amf_ue_t *amf_ue)
+void amf_ue_deassociate_ran_ue(amf_ue_t *amf_ue, ran_ue_t *ran_ue)
 {
     ogs_assert(amf_ue);
-    amf_ue->ran_ue_id = OGS_INVALID_POOL_ID;
+    ogs_assert(ran_ue);
+
+    if (amf_ue->ran_ue_id == ran_ue->id)
+        amf_ue->ran_ue_id = OGS_INVALID_POOL_ID;
+    else
+        ogs_error("Cannot deassociate amf_ue->ran_ue_id[%d] != ran_ue->id[%d]",
+                amf_ue->ran_ue_id, ran_ue->id);
 }
 
 void source_ue_associate_target_ue(
@@ -2222,20 +2475,37 @@ void source_ue_deassociate_target_ue(ran_ue_t *ran_ue)
 
         ogs_assert(source_ue->target_ue_id >= OGS_MIN_POOL_ID &&
                 source_ue->target_ue_id <= OGS_MAX_POOL_ID);
-        ogs_assert(target_ue->source_ue_id >= OGS_MIN_POOL_ID &&
-                target_ue->source_ue_id <= OGS_MAX_POOL_ID);
         source_ue->target_ue_id = OGS_INVALID_POOL_ID;
-        target_ue->source_ue_id = OGS_INVALID_POOL_ID;
+
+        if (target_ue) {
+            ogs_assert(target_ue->source_ue_id >= OGS_MIN_POOL_ID &&
+                    target_ue->source_ue_id <= OGS_MAX_POOL_ID);
+            target_ue->source_ue_id = OGS_INVALID_POOL_ID;
+        } else
+            ogs_error("Target-UE-ID [%d] has already been removed "
+                    "(RAN_UE_S1AP_ID[%lld] AMF_UE_S1AP_ID[%lld])",
+                    source_ue->target_ue_id,
+                    (long long)source_ue->ran_ue_ngap_id,
+                    (long long)source_ue->amf_ue_ngap_id);
+
     } else if (ran_ue->source_ue_id >= OGS_MIN_POOL_ID &&
                 ran_ue->source_ue_id <= OGS_MAX_POOL_ID) {
         target_ue = ran_ue;
         source_ue = ran_ue_find_by_id(ran_ue->source_ue_id);
 
-        ogs_assert(source_ue->target_ue_id >= OGS_MIN_POOL_ID &&
-                source_ue->target_ue_id <= OGS_MAX_POOL_ID);
+        if (source_ue) {
+            ogs_assert(source_ue->target_ue_id >= OGS_MIN_POOL_ID &&
+                    source_ue->target_ue_id <= OGS_MAX_POOL_ID);
+            source_ue->target_ue_id = OGS_INVALID_POOL_ID;
+        } else
+            ogs_error("Source-UE-ID [%d] has already been removed "
+                    "(RAN_UE_S1AP_ID[%lld] AMF_UE_S1AP_ID[%lld])",
+                    target_ue->source_ue_id,
+                    (long long)target_ue->ran_ue_ngap_id,
+                    (long long)target_ue->amf_ue_ngap_id);
+
         ogs_assert(target_ue->source_ue_id >= OGS_MIN_POOL_ID &&
                 target_ue->source_ue_id <= OGS_MAX_POOL_ID);
-        source_ue->target_ue_id = OGS_INVALID_POOL_ID;
         target_ue->source_ue_id = OGS_INVALID_POOL_ID;
     }
 }
@@ -2257,6 +2527,7 @@ amf_sess_t *amf_sess_add(amf_ue_t *amf_ue, uint8_t psi)
 
     sess->s_nssai.sst = 0;
     sess->s_nssai.sd.v = OGS_S_NSSAI_NO_SD_VALUE;
+    sess->mapped_hplmn_presence = false;
     sess->mapped_hplmn.sst = 0;
     sess->mapped_hplmn.sd.v = OGS_S_NSSAI_NO_SD_VALUE;
 
@@ -2309,10 +2580,12 @@ void amf_sess_remove(amf_sess_t *sess)
 
     if (sess->nssf.nsi_id)
         ogs_free(sess->nssf.nsi_id);
-    if (sess->nssf.nrf.id)
-        ogs_free(sess->nssf.nrf.id);
+    if (sess->nssf.nrf_uri)
+        ogs_free(sess->nssf.nrf_uri);
     if (sess->nssf.nrf.client)
         ogs_sbi_client_remove(sess->nssf.nrf.client);
+    if (sess->nssf.hnrf_uri)
+        ogs_free(sess->nssf.hnrf_uri);
 
     ogs_pool_id_free(&amf_sess_pool, sess);
 
@@ -2347,53 +2620,6 @@ amf_ue_t *amf_ue_find_by_id(ogs_pool_id_t id)
 amf_sess_t *amf_sess_find_by_id(ogs_pool_id_t id)
 {
     return ogs_pool_find_by_id(&amf_sess_pool, id);
-}
-
-void amf_sbi_select_nf(
-        ogs_sbi_object_t *sbi_object,
-        ogs_sbi_service_type_e service_type,
-        OpenAPI_nf_type_e requester_nf_type,
-        ogs_sbi_discovery_option_t *discovery_option)
-{
-    OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
-    ogs_sbi_nf_instance_t *nf_instance = NULL;
-    amf_sess_t *sess = NULL;
-
-    ogs_assert(sbi_object);
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
-    ogs_assert(target_nf_type);
-    ogs_assert(requester_nf_type);
-
-    switch(sbi_object->type) {
-    case OGS_SBI_OBJ_UE_TYPE:
-        nf_instance = ogs_sbi_nf_instance_find_by_discovery_param(
-                        target_nf_type, requester_nf_type, discovery_option);
-        if (nf_instance)
-            OGS_SBI_SETUP_NF_INSTANCE(
-                    sbi_object->service_type_array[service_type], nf_instance);
-        break;
-    case OGS_SBI_OBJ_SESS_TYPE:
-        sess = (amf_sess_t *)sbi_object;
-        ogs_assert(sess);
-
-        ogs_list_for_each(&ogs_sbi_self()->nf_instance_list, nf_instance) {
-            if (ogs_sbi_discovery_param_is_matched(
-                    nf_instance,
-                    target_nf_type, requester_nf_type, discovery_option) ==
-                        false)
-                continue;
-
-            OGS_SBI_SETUP_NF_INSTANCE(
-                    sbi_object->service_type_array[service_type], nf_instance);
-            break;
-        }
-        break;
-    default:
-        ogs_fatal("(NF discover search result) Not implemented [%d]",
-                    sbi_object->type);
-        ogs_assert_if_reached();
-    }
 }
 
 int amf_sess_xact_count(amf_ue_t *amf_ue)
@@ -2507,7 +2733,9 @@ int amf_find_served_tai(ogs_5gs_tai_t *nr_tai)
             ogs_assert(list1->tai[j].type == OGS_TAI1_TYPE);
             ogs_assert(list1->tai[j].num <= OGS_MAX_NUM_OF_TAI);
 
-            if (list1->tai[j].tac.v <= nr_tai->tac.v &&
+            if (memcmp(&list1->tai[j].plmn_id,
+                    &nr_tai->plmn_id, OGS_PLMN_ID_LEN) == 0 &&
+                list1->tai[j].tac.v <= nr_tai->tac.v &&
                 nr_tai->tac.v < (list1->tai[j].tac.v+list1->tai[j].num))
                 return i;
         }
@@ -2667,6 +2895,63 @@ uint8_t amf_selected_enc_algorithm(amf_ue_t *amf_ue)
     }
 
     return 0;
+}
+
+/*
+ * Save the sensitive (partial) context fields
+ * from the UE context into the memento
+ */
+void amf_ue_save_memento(amf_ue_t *amf_ue, amf_ue_memento_t *memento)
+{
+    ogs_assert(amf_ue);
+    ogs_assert(memento);
+
+    memcpy(&memento->ue_security_capability, &amf_ue->ue_security_capability,
+           sizeof(memento->ue_security_capability));
+    memcpy(&memento->ue_network_capability, &amf_ue->ue_network_capability,
+           sizeof(memento->ue_network_capability));
+    memcpy(memento->rand, amf_ue->rand, OGS_RAND_LEN);
+    memcpy(memento->autn, amf_ue->autn, OGS_AUTN_LEN);
+    memcpy(memento->xres_star, amf_ue->xres_star, OGS_MAX_RES_LEN);
+    memcpy(memento->abba, amf_ue->abba, OGS_NAS_MAX_ABBA_LEN);
+    memento->abba_len = amf_ue->abba_len;
+    memcpy(memento->hxres_star, amf_ue->hxres_star, OGS_MAX_RES_LEN);
+    memcpy(memento->kamf, amf_ue->kamf, OGS_SHA256_DIGEST_SIZE);
+    memcpy(memento->knas_int, amf_ue->knas_int, OGS_SHA256_DIGEST_SIZE/2);
+    memcpy(memento->knas_enc, amf_ue->knas_enc, OGS_SHA256_DIGEST_SIZE/2);
+    memento->dl_count = amf_ue->dl_count;
+    memento->ul_count = amf_ue->ul_count.i32;
+    memcpy(memento->kgnb, amf_ue->kgnb, OGS_SHA256_DIGEST_SIZE);
+    memcpy(memento->nh, amf_ue->nh, OGS_SHA256_DIGEST_SIZE);
+    memento->selected_enc_algorithm = amf_ue->selected_enc_algorithm;
+    memento->selected_int_algorithm = amf_ue->selected_int_algorithm;
+}
+
+/* Restore the sensitive context fields into the UE context */
+void amf_ue_restore_memento(amf_ue_t *amf_ue, const amf_ue_memento_t *memento)
+{
+    ogs_assert(amf_ue);
+    ogs_assert(memento);
+
+    memcpy(&amf_ue->ue_security_capability, &memento->ue_security_capability,
+           sizeof(amf_ue->ue_security_capability));
+    memcpy(&amf_ue->ue_network_capability, &memento->ue_network_capability,
+           sizeof(amf_ue->ue_network_capability));
+    memcpy(amf_ue->rand, memento->rand, OGS_RAND_LEN);
+    memcpy(amf_ue->autn, memento->autn, OGS_AUTN_LEN);
+    memcpy(amf_ue->xres_star, memento->xres_star, OGS_MAX_RES_LEN);
+    memcpy(amf_ue->abba, memento->abba, OGS_NAS_MAX_ABBA_LEN);
+    amf_ue->abba_len = memento->abba_len;
+    memcpy(amf_ue->hxres_star, memento->hxres_star, OGS_MAX_RES_LEN);
+    memcpy(amf_ue->kamf, memento->kamf, OGS_SHA256_DIGEST_SIZE);
+    memcpy(amf_ue->knas_int, memento->knas_int, OGS_SHA256_DIGEST_SIZE/2);
+    memcpy(amf_ue->knas_enc, memento->knas_enc, OGS_SHA256_DIGEST_SIZE/2);
+    amf_ue->dl_count = memento->dl_count;
+    amf_ue->ul_count.i32 = memento->ul_count;
+    memcpy(amf_ue->kgnb, memento->kgnb, OGS_SHA256_DIGEST_SIZE);
+    memcpy(amf_ue->nh, memento->nh, OGS_SHA256_DIGEST_SIZE);
+    amf_ue->selected_enc_algorithm = memento->selected_enc_algorithm;
+    amf_ue->selected_int_algorithm = memento->selected_int_algorithm;
 }
 
 void amf_clear_subscribed_info(amf_ue_t *amf_ue)
@@ -2879,6 +3164,12 @@ bool amf_update_allowed_nssai(amf_ue_t *amf_ue)
     amf_ue->rejected_nssai.num_of_s_nssai = 0;
 
     if (amf_ue->requested_nssai.num_of_s_nssai) {
+
+        if (amf_ue->num_of_slice == 0) {
+            ogs_error("[%s] No Slice in Subscription DB", amf_ue->supi);
+            return false;
+        }
+
         for (i = 0; i < amf_ue->requested_nssai.num_of_s_nssai; i++) {
             ogs_slice_data_t *slice = NULL;
             ogs_nas_s_nssai_ie_t *requested =
@@ -2891,7 +3182,6 @@ bool amf_update_allowed_nssai(amf_ue_t *amf_ue)
                         s_nssai[amf_ue->rejected_nssai.num_of_s_nssai];
             bool ta_supported = false;
 
-            ogs_assert(amf_ue->num_of_slice);
             slice = ogs_slice_find_by_s_nssai(
                     amf_ue->slice, amf_ue->num_of_slice,
                     (ogs_s_nssai_t *)requested);
@@ -2904,6 +3194,8 @@ bool amf_update_allowed_nssai(amf_ue_t *amf_ue)
 
                 allowed->sst = requested->sst;
                 allowed->sd.v = requested->sd.v;
+                allowed->mapped_hplmn_sst_presence =
+                        requested->mapped_hplmn_sst_presence;
                 allowed->mapped_hplmn_sst = requested->mapped_hplmn_sst;
                 allowed->mapped_hplmn_sd.v = requested->mapped_hplmn_sd.v;
 
@@ -2940,6 +3232,7 @@ bool amf_update_allowed_nssai(amf_ue_t *amf_ue)
 
                 allowed->sst = slice->s_nssai.sst;
                 allowed->sd.v = slice->s_nssai.sd.v;
+                allowed->mapped_hplmn_sst_presence = false;
                 allowed->mapped_hplmn_sst = 0;
                 allowed->mapped_hplmn_sd.v = OGS_S_NSSAI_NO_SD_VALUE;
 
@@ -3021,4 +3314,35 @@ bool amf_ue_is_rat_restricted(amf_ue_t *amf_ue)
         }
     }
     return false;
+}
+
+void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue)
+{
+    amf_sess_t *sess = NULL;
+
+    OpenAPI_list_clear(amf_ue->to_release_session_list);
+
+    ogs_list_for_each(&amf_ue->sess_list, sess) {
+        bool supported_s_nssai = false;
+        int i;
+        for (i = 0; i < amf_self()->num_of_plmn_support; i++) {
+            int j;
+            for (j = 0; j < amf_self()->plmn_support[i].num_of_s_nssai; j++) {
+                if (memcmp(&sess->s_nssai,
+                        &amf_self()->plmn_support[i].s_nssai[j],
+                        sizeof(ogs_s_nssai_t)) == 0) {
+                    supported_s_nssai = true;
+                    break;
+                }
+            }
+            if (supported_s_nssai)
+                break;
+        }
+        if (!supported_s_nssai) {
+            double *psi = ogs_calloc(1, sizeof(*psi));
+            ogs_assert(psi);
+            *psi = (double)sess->psi;
+            OpenAPI_list_add(amf_ue->to_release_session_list, psi);
+        }
+    }
 }

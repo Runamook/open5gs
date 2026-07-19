@@ -30,6 +30,7 @@ static void server_final(void);
 
 static int server_start(ogs_sbi_server_t *server,
         int (*cb)(ogs_sbi_request_t *request, void *data));
+static void server_graceful_shutdown(ogs_sbi_server_t *server);
 static void server_stop(ogs_sbi_server_t *server);
 
 static bool server_send_rspmem_persistent(
@@ -42,11 +43,15 @@ static ogs_sbi_server_t *server_from_stream(ogs_sbi_stream_t *stream);
 static ogs_pool_id_t id_from_stream(ogs_sbi_stream_t *stream);
 static void *stream_find_by_id(ogs_pool_id_t id);
 
+static void xact_attach(ogs_sbi_stream_t *stream, ogs_sbi_xact_t *xact);
+static void xact_detach(ogs_sbi_xact_t *xact);
+
 const ogs_sbi_server_actions_t ogs_nghttp2_server_actions = {
     server_init,
     server_final,
 
     server_start,
+    server_graceful_shutdown,
     server_stop,
 
     server_send_rspmem_persistent,
@@ -56,6 +61,9 @@ const ogs_sbi_server_actions_t ogs_nghttp2_server_actions = {
 
     id_from_stream,
     stream_find_by_id,
+
+    xact_attach,
+    xact_detach,
 };
 
 struct h2_settings {
@@ -94,6 +102,15 @@ typedef struct ogs_sbi_stream_s {
     bool                    memory_overflow;
 
     ogs_sbi_session_t       *session;
+
+    /*
+     * Outbound SBI transactions originated by this inbound stream.
+     * Populated automatically when ogs_sbi_discover_and_send() sees
+     * xact->assoc_stream_id pointing at this stream, and drained at
+     * stream close so response timers are freed promptly rather
+     * than lingering until the SBI client wait timeout.
+     */
+    ogs_list_t              xact_list;
 } ogs_sbi_stream_t;
 
 static void session_remove(ogs_sbi_session_t *sbi_sess);
@@ -196,7 +213,9 @@ static int ssl_ctx_set_proto_versions(SSL_CTX *ssl_ctx, int min, int max)
 #endif /* OPENSSL_VERSION_NUMBER >= 0x1010000fL */
 }
 
-static SSL_CTX *create_ssl_ctx(const char *key_file, const char *cert_file)
+static SSL_CTX *create_ssl_ctx(
+        const char *key_file, const char *cert_file,
+        const char *sslkeylog_file)
 {
     SSL_CTX *ssl_ctx;
     uint64_t ssl_opts;
@@ -208,6 +227,16 @@ static SSL_CTX *create_ssl_ctx(const char *key_file, const char *cert_file)
     if (!ssl_ctx) {
         ogs_error("Could not create SSL/TLS context: %s", ERR_error_string(ERR_get_error(), NULL));
         return NULL;
+    }
+
+    /* Set key log files for each SSL_CTX */
+    if (sslkeylog_file) {
+        /* Ensure app data is set for SSL objects */
+        SSL_CTX_set_app_data(ssl_ctx, sslkeylog_file);
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+        /* Set the SSL Key Log callback */
+        SSL_CTX_set_keylog_callback(ssl_ctx, ogs_sbi_keylog_callback);
+#endif
     }
 
     ssl_opts = (SSL_OP_ALL & ~SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS) |
@@ -322,7 +351,8 @@ static int server_start(ogs_sbi_server_t *server,
     /* Create SSL CTX */
     if (server->scheme == OpenAPI_uri_scheme_https) {
 
-        server->ssl_ctx = create_ssl_ctx(server->private_key, server->cert);
+        server->ssl_ctx = create_ssl_ctx(
+                server->private_key, server->cert, server->sslkeylog);
         if (!server->ssl_ctx) {
             ogs_error("Cannot create SSL CTX");
             return OGS_ERROR;
@@ -427,6 +457,33 @@ static int server_start(ogs_sbi_server_t *server,
                 OGS_ADDR(addr, buf), OGS_PORT(addr));
 
     return OGS_OK;
+}
+
+/* Gracefully shutdown the server by sending GOAWAY to each session. */
+static void server_graceful_shutdown(ogs_sbi_server_t *server)
+{
+    ogs_sbi_session_t *sbi_sess = NULL;
+    ogs_sbi_session_t *next_sbi_sess = NULL;
+    int rv;
+
+    /* Iterate over all active sessions in the server. */
+    ogs_list_for_each_safe(&server->session_list, next_sbi_sess, sbi_sess) {
+        /* Submit a GOAWAY frame using the last stream ID. */
+        rv = nghttp2_submit_goaway(sbi_sess->session,
+                                   NGHTTP2_FLAG_NONE,
+                                   sbi_sess->last_stream_id,
+                                   NGHTTP2_NO_ERROR,
+                                   NULL, 0);
+        if (rv != 0) {
+            ogs_error("nghttp2_submit_goaway() failed (%d:%s)",
+                      rv, nghttp2_strerror(rv));
+        }
+
+        /* Send the GOAWAY frame to the client. */
+        if (session_send(sbi_sess) != OGS_OK) {
+            ogs_error("session_send() failed during graceful shutdown");
+        }
+    }
 }
 
 static void server_stop(ogs_sbi_server_t *server)
@@ -729,9 +786,85 @@ static ogs_sbi_stream_t *stream_add(
 
     stream->session = sbi_sess;
 
+    ogs_list_init(&stream->xact_list);
+
     ogs_list_add(&sbi_sess->stream_list, stream);
 
     return stream;
+}
+
+static void xact_attach(ogs_sbi_stream_t *stream, ogs_sbi_xact_t *xact)
+{
+    ogs_assert(stream);
+    ogs_assert(xact);
+
+    /*
+     * Invariant: the server-layer wrapper (ogs_sbi_server_attach_xact)
+     * already filtered out the already-attached case. Reaching the
+     * backend with to_stream_list set is a programming error.
+     */
+    ogs_assert(!xact->to_stream_list);
+
+    /*
+     * Cache the list head so xact_detach() can unlink in O(1)
+     * without re-resolving the stream from assoc_stream_id.
+     * to_stream_list serves as both attachment flag and cached head.
+     */
+    ogs_list_add(&stream->xact_list, &xact->to_stream_node);
+    xact->to_stream_list = &stream->xact_list;
+}
+
+static void xact_detach(ogs_sbi_xact_t *xact)
+{
+    ogs_assert(xact);
+
+    /*
+     * Invariant: the server-layer wrapper (ogs_sbi_server_detach_xact)
+     * already filtered out the not-attached case. Reaching the
+     * backend with to_stream_list cleared is a programming error.
+     */
+    ogs_assert(xact->to_stream_list);
+
+    ogs_list_remove(xact->to_stream_list, &xact->to_stream_node);
+
+    xact->to_stream_list = NULL;
+    xact->assoc_stream_id = OGS_INVALID_POOL_ID;
+}
+
+/*
+ * Cancel every outbound SBI transaction that was triggered by this
+ * stream. Without this, ogs_sbi_xact_remove() and its response timer
+ * would only be reached when the upstream NF responds or the SBI
+ * client wait timer expires; a peer that rapidly resets streams
+ * while the upstream NF stalls would pile up those timers until the
+ * pool is exhausted (the crash signature in issues #4472 / #4473).
+ *
+ * ogs_sbi_xact_remove() invokes xact_detach() internally, which is
+ * what unlinks the node from this list. ogs_list_for_each_entry_safe
+ * caches the next pointer before the body runs, so detach-during-
+ * iteration is well-defined.
+ */
+static void stream_remove_xact_all(ogs_sbi_stream_t *stream)
+{
+    ogs_sbi_xact_t *xact = NULL, *next_xact = NULL;
+
+    ogs_assert(stream);
+
+    ogs_list_for_each_entry_safe(
+            &stream->xact_list, next_xact, xact, to_stream_node) {
+        /*
+         * Logged at error level so the cancellation shows up in
+         * production traces alongside the upstream NF activity that
+         * was abandoned. Useful for diagnosing #4472/#4473 style
+         * patterns and any future regression where a peer resets
+         * streams while upstream NFs are slow.
+         */
+        ogs_error("Canceling pending outbound SBI transaction "
+                "on HTTP/2 stream close [xact:%d,stream:%d,service:%s]",
+                (int)xact->id, stream->stream_id,
+                OpenAPI_service_name_ToString(xact->service_name));
+        ogs_sbi_xact_remove(xact);
+    }
 }
 
 static void stream_remove(ogs_sbi_stream_t *stream)
@@ -743,6 +876,8 @@ static void stream_remove(ogs_sbi_stream_t *stream)
     ogs_assert(sbi_sess);
 
     ogs_list_remove(&sbi_sess->stream_list, stream);
+
+    stream_remove_xact_all(stream);
 
     ogs_assert(stream->request);
     ogs_sbi_request_free(stream->request);
@@ -1187,6 +1322,18 @@ static int on_frame_recv(nghttp2_session *session,
             if (server->cb(request,
                         OGS_UINT_TO_POINTER(stream->id)) != OGS_OK) {
                 ogs_warn("server callback error");
+
+                /* The callback may have sent a response and closed
+                 * the stream. */
+                stream = nghttp2_session_get_stream_user_data(
+                        session, frame->hd.stream_id);
+                if (!stream) {
+                    ogs_error("The server callback already sent a response "
+                            "but returned an error; it must return OGS_OK "
+                            "instead [%d]", frame->hd.stream_id);
+                    return 0;
+                }
+
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(stream,
                         OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
@@ -1355,6 +1502,21 @@ static int on_header(nghttp2_session *session, const nghttp2_frame *frame,
 
         j = 0;
         while(params[j].key && params[j].val) {
+            if (j >= MAX_NUM_OF_PARAM_IN_QUERY) {
+                ogs_error("Too many query params (max=%d)",
+                        MAX_NUM_OF_PARAM_IN_QUERY);
+                ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, NULL,
+                        "Too many query parameters", NULL, NULL);
+
+                ogs_free(query);
+
+                ogs_free(namestr);
+                ogs_free(valuestr);
+
+                return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+            }
+
             if (strlen(params[j].key))
                 ogs_sbi_header_set(request->http.params,
                         params[j].key, params[j].val);
@@ -1362,12 +1524,6 @@ static int on_header(nghttp2_session *session, const nghttp2_frame *frame,
                 ogs_warn("No KEY in Query-Parms");
 
             j++;
-        }
-
-        if (j >= MAX_NUM_OF_PARAM_IN_QUERY+1) {
-            ogs_fatal("Maximum number(%d) of query params reached",
-                    MAX_NUM_OF_PARAM_IN_QUERY);
-            ogs_assert_if_reached();
         }
 
         ogs_free(query);
@@ -1397,6 +1553,7 @@ static int on_data_chunk_recv(nghttp2_session *session, uint8_t flags,
 {
     ogs_sbi_stream_t *stream = NULL;
     ogs_sbi_request_t *request = NULL;
+    char *content = NULL;
 
     size_t offset = 0;
 
@@ -1414,27 +1571,47 @@ static int on_data_chunk_recv(nghttp2_session *session, uint8_t flags,
     ogs_assert(data);
     ogs_assert(len);
 
+#define MAX_HTTP_CONTENT_LEN (256 * 1024 * 1024) /* 256MB */
+    if (request->http.content_length + len > MAX_HTTP_CONTENT_LEN) {
+        stream->memory_overflow = true;
+
+        ogs_error("Payload too large : Content-Length[%d], len[%d]",
+                    (int)request->http.content_length, (int)len);
+
+        ogs_sbi_server_send_error(stream,
+                OGS_SBI_HTTP_STATUS_PAYLOAD_TOO_LARGE,
+                NULL, "Payload too large", NULL, NULL);
+
+        return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+    }
+
     if (request->http.content == NULL) {
         ogs_assert(request->http.content_length == 0);
         ogs_assert(offset == 0);
 
-        request->http.content = (char*)ogs_malloc(len + 1);
+        content = (char*)ogs_malloc(len + 1);
     } else {
         ogs_assert(request->http.content_length != 0);
 
-        request->http.content = (char*)ogs_realloc(
+        content = (char*)ogs_realloc(
                 request->http.content, request->http.content_length + len + 1);
     }
 
-    if (!request->http.content) {
+    if (!content) {
         stream->memory_overflow = true;
 
-        ogs_error("Overflow : Content-Length[%d], len[%d]",
+        ogs_error("Memory Overflow : Content-Length[%d], len[%d]",
                     (int)request->http.content_length, (int)len);
         ogs_log_hexdump(OGS_LOG_ERROR, data, len);
 
-        return 0;
+        ogs_sbi_server_send_error(stream,
+                OGS_SBI_HTTP_STATUS_SERVICE_UNAVAILABLE,
+                NULL, "Memory Overflow", NULL, NULL);
+
+        return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
     }
+
+    request->http.content = content;
 
     offset = request->http.content_length;
     request->http.content_length += len;
@@ -1543,6 +1720,7 @@ static int on_begin_headers(nghttp2_session *session,
 {
     ogs_sbi_session_t *sbi_sess = user_data;
     ogs_sbi_stream_t *stream = NULL;
+    int rv;
 
     ogs_assert(sbi_sess);
     ogs_assert(session);
@@ -1554,7 +1732,20 @@ static int on_begin_headers(nghttp2_session *session,
     }
 
     stream = stream_add(sbi_sess, frame->hd.stream_id);
-    ogs_assert(stream);
+    if (!stream) {
+        ogs_error("stream_add() failed for stream [%d]",
+                frame->hd.stream_id);
+
+        rv = nghttp2_submit_rst_stream(
+                session, NGHTTP2_FLAG_NONE,
+                frame->hd.stream_id, NGHTTP2_REFUSED_STREAM);
+        if (rv != 0)
+            ogs_error("nghttp2_submit_rst_stream() failed (%d:%s)",
+                    rv, nghttp2_strerror(rv));
+
+        return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+    }
+
     ogs_debug("STREAM added [%d]", frame->hd.stream_id);
 
     nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, stream);
@@ -1720,9 +1911,12 @@ static void session_write_callback(short when, ogs_socket_t fd, void *data)
     ogs_assert(sbi_sess);
 
     if (ogs_list_empty(&sbi_sess->write_queue) == true) {
-        ogs_assert(sbi_sess->poll.write);
-        ogs_pollset_remove(sbi_sess->poll.write);
-        sbi_sess->poll.write = NULL;
+        if (sbi_sess->poll.write) {
+            ogs_pollset_remove(sbi_sess->poll.write);
+            sbi_sess->poll.write = NULL;
+        } else
+            ogs_warn("poll.write has already been removed");
+
         return;
     }
 

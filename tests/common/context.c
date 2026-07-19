@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -104,9 +104,19 @@ static int test_context_validation(void)
     if (snode) test_self()->s1ap_addr6 = snode->addr;
 
     snode = ogs_list_first(&test_self()->ngap_list);
-    if (snode) test_self()->ngap_addr = snode->addr;
+
+    if (snode) {
+        test_self()->ngap_addr = snode->addr;
+        snode = ogs_list_next(snode);
+    }
+    if (snode) test_self()->ngap2_addr = snode->addr;
+
     snode = ogs_list_first(&test_self()->ngap_list6);
-    if (snode) test_self()->ngap_addr6 = snode->addr;
+    if (snode) {
+        test_self()->ngap_addr6 = snode->addr;
+        snode = ogs_list_next(snode);
+    }
+    if (snode) test_self()->ngap2_addr6 = snode->addr;
 
     if (test_self()->e_served_tai[index].list2.num) {
         memcpy(&test_self()->e_tai,
@@ -175,6 +185,7 @@ int test_context_parse_config(void)
     while (ogs_yaml_iter_next(&root_iter)) {
         const char *root_key = ogs_yaml_iter_key(&root_iter);
         ogs_assert(root_key);
+
         if (!strcmp(root_key, "amf")) {
             ogs_yaml_iter_t amf_iter;
             ogs_yaml_iter_recurse(&root_iter, &amf_iter);
@@ -615,7 +626,7 @@ int test_context_parse_config(void)
                                         s_nssai->sst = atoi(sst);
                                         if (sd)
                                             s_nssai->sd =
-                                                ogs_uint24_from_string(
+                                                ogs_uint24_from_string_hexadecimal(
                                                         (char*)sd);
                                         else
                                             s_nssai->sd.v =
@@ -1163,6 +1174,7 @@ test_ue_t *test_ue_add_by_suci(
 
             s_nssai->sst = 0;
             s_nssai->sd.v = OGS_S_NSSAI_NO_SD_VALUE;
+            s_nssai->mapped_hplmn_sst_presence = false;
             s_nssai->mapped_hplmn_sst = 0;
             s_nssai->mapped_hplmn_sd.v = OGS_S_NSSAI_NO_SD_VALUE;
 
@@ -1473,8 +1485,24 @@ int test_db_insert_ue(test_ue_t *test_ue, bson_t *doc)
     key = BCON_NEW("imsi", BCON_UTF8(test_ue->imsi));
     ogs_assert(key);
 
-    count = mongoc_collection_count (
-        collection, MONGOC_QUERY_NONE, key, 0, 0, NULL, &error);
+#if MONGOC_CHECK_VERSION(1, 11, 0)
+    count = mongoc_collection_count_documents(
+            collection,
+            key,
+            NULL,
+            NULL,
+            NULL,
+            &error);
+#else
+    count = mongoc_collection_count(
+            collection,
+            MONGOC_QUERY_NONE,
+            key,
+            0,
+            0,
+            NULL,
+            &error);
+#endif
     if (count) {
         if (mongoc_collection_remove(collection,
                 MONGOC_REMOVE_SINGLE_REMOVE, key, NULL, &error) != true) {
@@ -1496,8 +1524,24 @@ int test_db_insert_ue(test_ue_t *test_ue, bson_t *doc)
     key = BCON_NEW("imsi", BCON_UTF8(test_ue->imsi));
     ogs_assert(key);
     do {
+#if MONGOC_CHECK_VERSION(1, 11, 0)
+        count = mongoc_collection_count_documents(
+                collection,
+                key,
+                NULL,
+                NULL,
+                NULL,
+                &error);
+#else
         count = mongoc_collection_count(
-            collection, MONGOC_QUERY_NONE, key, 0, 0, NULL, &error);
+                collection,
+                MONGOC_QUERY_NONE,
+                key,
+                0,
+                0,
+                NULL,
+                &error);
+#endif
     } while (count == 0);
     bson_destroy(key);
 
@@ -1587,6 +1631,11 @@ bson_t *test_db_new_simple(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                 "}", "]",
             "}", "]",
             "security", "{",
@@ -1692,6 +1741,11 @@ bson_t *test_db_new_qos_flow(test_ue_t *test_ue)
                                  "description", BCON_UTF8("permit out udp from 10.200.136.98/32 1-65535 to assigned 50021"), "}",
                         "]",
                     "}", "]",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                 "}", "]",
             "}", "]",
             "security", "{",
@@ -1793,6 +1847,11 @@ bson_t *test_db_new_qos_flow_bi_directional(test_ue_t *test_ue)
                                  "description", BCON_UTF8("permit out udp from 10.200.136.98/32 23455 to assigned 1-65535"), "}",
                         "]",
                     "}", "]",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                 "}", "]",
             "}", "]",
             "security", "{",
@@ -1859,6 +1918,11 @@ bson_t *test_db_new_session(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims"),
@@ -1921,6 +1985,11 @@ bson_t *test_db_new_session(test_ue_t *test_ue)
                                  "description", BCON_UTF8("permit out udp from 10.200.136.98/32 1-65535 to assigned 50021"), "}",
                         "]",
                     "}", "]",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
             "}", "]",
@@ -1988,6 +2057,11 @@ bson_t *test_db_new_ims(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims"),
@@ -2072,6 +2146,11 @@ bson_t *test_db_new_ims(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 0
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
             "}", "]",
@@ -2140,6 +2219,11 @@ bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims"),
@@ -2224,6 +2308,11 @@ bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
               "}",
@@ -2252,6 +2341,11 @@ bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims"),
@@ -2336,6 +2430,11 @@ bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
               "}",
@@ -2365,6 +2464,11 @@ bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims"),
@@ -2449,6 +2553,11 @@ bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
               "}",
@@ -2518,6 +2627,11 @@ bson_t *test_db_new_slice_with_different_dnn(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims"),
@@ -2602,6 +2716,11 @@ bson_t *test_db_new_slice_with_different_dnn(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
               "}",
@@ -2630,6 +2749,11 @@ bson_t *test_db_new_slice_with_different_dnn(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims2"),
@@ -2714,6 +2838,11 @@ bson_t *test_db_new_slice_with_different_dnn(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
               "}",
@@ -2743,6 +2872,11 @@ bson_t *test_db_new_slice_with_different_dnn(test_ue_t *test_ue)
                             "pre_emption_capability", BCON_INT32(1),
                         "}",
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("ims3"),
@@ -2827,6 +2961,11 @@ bson_t *test_db_new_slice_with_different_dnn(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
               "}",
@@ -2899,6 +3038,11 @@ bson_t *test_db_new_non3gpp(test_ue_t *test_ue)
                         "addr", BCON_UTF8("127.0.0.4"),
                         "addr6", BCON_UTF8("::1"),
                     "}",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                   "{",
                     "name", BCON_UTF8("wlan"),
@@ -2983,6 +3127,11 @@ bson_t *test_db_new_non3gpp(test_ue_t *test_ue)
                         "}",
                       "}",
                     "]",
+#if 1
+                    "lbo_roaming_allowed", BCON_BOOL(true),
+#else
+                    "lbo_roaming_allowed", BCON_BOOL(false),
+#endif
                   "}",
                 "]",
             "}", "]",

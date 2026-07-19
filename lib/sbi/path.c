@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -24,7 +24,7 @@ static int sepp_discover_handler(
 
 static void build_default_discovery_parameter(
         ogs_sbi_request_t *request,
-        ogs_sbi_service_type_e service_type,
+        OpenAPI_service_name_e service_name,
         ogs_sbi_discovery_option_t *discovery_option);
 
 int ogs_sbi_server_handler(ogs_sbi_request_t *request, void *data)
@@ -92,7 +92,7 @@ static int client_discover_cb(
     ogs_sbi_xact_t *xact = NULL;
     ogs_pool_id_t xact_id = 0;
     ogs_sbi_object_t *sbi_object = NULL;
-    ogs_sbi_service_type_e service_type = OGS_SBI_SERVICE_TYPE_NULL;
+    OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
     OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
     OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
@@ -113,9 +113,9 @@ static int client_discover_cb(
 
     sbi_object = xact->sbi_object;
     ogs_assert(sbi_object);
-    service_type = xact->service_type;
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
+    service_name = xact->service_name;
+    ogs_assert(service_name);
+    target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
     ogs_assert(target_nf_type);
     requester_nf_type = xact->requester_nf_type;
     ogs_assert(requester_nf_type);
@@ -225,7 +225,7 @@ static int client_discover_cb(
         }
 
         OGS_SBI_SETUP_NF_INSTANCE(
-                sbi_object->service_type_array[service_type], nf_instance);
+                sbi_object->service_name_array[service_name], nf_instance);
     }
 
     e = ogs_event_new(OGS_EVENT_SBI_CLIENT);
@@ -251,7 +251,7 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
     ogs_sbi_nf_instance_t *nf_instance = NULL;
 
     ogs_sbi_object_t *sbi_object = NULL;
-    ogs_sbi_service_type_e service_type = OGS_SBI_SERVICE_TYPE_NULL;
+    OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
     ogs_sbi_request_t *request = NULL;
 
@@ -261,41 +261,93 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
 
     sbi_object = xact->sbi_object;
     ogs_assert(sbi_object);
-    service_type = xact->service_type;
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
+    service_name = xact->service_name;
+    ogs_assert(service_name);
+    target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
     ogs_assert(target_nf_type);
     requester_nf_type = xact->requester_nf_type;
     ogs_assert(requester_nf_type);
     request = xact->request;
     ogs_assert(request);
 
+    /*
+     * If the NF associated this transaction with an inbound server
+     * stream (by assigning xact->assoc_stream_id before calling us),
+     * register the transaction on that stream's outbound xact list.
+     *
+     * When the inbound stream is later closed by the peer (HTTP/2
+     * RST_STREAM, connection drop) before the upstream NF response
+     * arrives, stream_remove() walks the list and cancels every
+     * outstanding transaction. The response timer is returned to
+     * the pool immediately rather than holding a slot until the
+     * SBI client wait timeout, so a burst of short-lived inbound
+     * requests cannot pile up enough pending timers to exhaust the
+     * pool (issues #4472 and #4473).
+     *
+     * Transactions with no inbound stream (e.g. NRF discovery
+     * initiated by the NF itself, status notifications) leave
+     * assoc_stream_id at OGS_INVALID_POOL_ID and the helper is a
+     * no-op (returns OGS_OK).
+     *
+     * If attach reports failure (originating stream already
+     * closed), we DO NOT abort the upstream send and we DO NOT
+     * propagate the failure to the NF caller: most NF wrappers
+     * treat any non-OK return as a hard send failure and remove
+     * the transaction, which would orphan an upstream request
+     * already on the wire. The diagnostic context (xact id,
+     * stream id, service type, file:line) is already emitted by
+     * ogs_sbi_server_attach_xact() itself and by the ogs_error()
+     * below, so the situation is observable without changing the
+     * caller-visible return code. If a response later arrives,
+     * the NF response handler will see no stream and drop it
+     * through the existing "STREAM has already been removed"
+     * path.
+     */
+    if (ogs_sbi_server_attach_xact(xact) != OGS_OK) {
+        ogs_error("ogs_sbi_discover_and_send: attach failed, "
+                "proceeding with upstream send "
+                "[xact:%d,assoc_stream_id:%d,service:%s]",
+                (int)xact->id, (int)xact->assoc_stream_id,
+                OpenAPI_service_name_ToString(service_name));
+        /* fall through — upstream send must still happen */
+    }
+
     discovery_option = xact->discovery_option;
 
     /* SCP Availability */
-    if (ogs_sbi_self()->discovery_config.delegated ==
-            OGS_SBI_DISCOVERY_DELEGATED_AUTO) {
+    if (ogs_sbi_self()->client_delegated_config.nrf.disc ==
+            OGS_SBI_CLIENT_DELEGATED_AUTO) {
         scp_client = NF_INSTANCE_CLIENT(ogs_sbi_self()->scp_instance);
-    } else if (ogs_sbi_self()->discovery_config.delegated ==
-            OGS_SBI_DISCOVERY_DELEGATED_YES) {
+    } else if (ogs_sbi_self()->client_delegated_config.nrf.disc ==
+            OGS_SBI_CLIENT_DELEGATED_YES) {
         scp_client = NF_INSTANCE_CLIENT(ogs_sbi_self()->scp_instance);
         ogs_assert(scp_client);
     }
 
-    /* Target NF-Instance */
+/*
+ * Issue #3470
+ *
+ * Previously, nf_instance pointers were stored in nf_type_array and
+ * service_name_array. This led to a dangling pointer problem when an
+ * nf_instance was removed via ogs_sbi_nf_instance_remove().
+ *
+ * To resolve this, we now store nf_instance_id instead, and use
+ * ogs_sbi_nf_instance_find(nf_instance_id) to verify the validity of an
+ * nf_instance.
+ */
     nf_instance = OGS_SBI_GET_NF_INSTANCE(
-            sbi_object->service_type_array[service_type]);
+            sbi_object->service_name_array[service_name]);
     ogs_debug("OGS_SBI_GET_NF_INSTANCE [nf_instance:%p,service_name:%s]",
-            nf_instance, ogs_sbi_service_type_to_name(service_type));
+            nf_instance, OpenAPI_service_name_ToString(service_name));
     if (!nf_instance) {
         nf_instance = ogs_sbi_nf_instance_find_by_discovery_param(
                         target_nf_type, requester_nf_type, discovery_option);
         ogs_debug("ogs_sbi_nf_instance_find_by_discovery_param() "
                 "[nf_instance:%p,service_name:%s]",
-                nf_instance, ogs_sbi_service_type_to_name(service_type));
+                nf_instance, OpenAPI_service_name_ToString(service_name));
         if (nf_instance)
             OGS_SBI_SETUP_NF_INSTANCE(
-                    sbi_object->service_type_array[service_type], nf_instance);
+                    sbi_object->service_name_array[service_name], nf_instance);
     }
 
     /* Target Client */
@@ -333,7 +385,7 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
          * INDIRECT COMMUNICATION
          *************************/
         build_default_discovery_parameter(
-            request, service_type, discovery_option);
+            request, service_name, discovery_option);
 
         if (client) {
             /*
@@ -487,6 +539,13 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
                 ogs_free(v);
             }
 
+            if (discovery_option && discovery_option->hnrf_uri) {
+                ogs_debug("hnrf_uri [%s]", discovery_option->hnrf_uri);
+                ogs_sbi_header_set(request->http.headers,
+                        OGS_SBI_CUSTOM_DISCOVERY_HNRF_URI,
+                        discovery_option->hnrf_uri);
+            }
+
             rc = ogs_sbi_client_send_via_scp_or_sepp(
                     scp_client, client_discover_cb, request,
                     OGS_UINT_TO_POINTER(xact->id));
@@ -500,9 +559,7 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
          ***********************/
 
         /* If `client` instance is available, use direct communication */
-        rc = ogs_sbi_send_request_to_client(
-                client, ogs_sbi_client_handler, request,
-                OGS_UINT_TO_POINTER(xact->id));
+        rc = ogs_sbi_send_request_with_sepp_discovery(client, xact);
         ogs_expect(rc == true);
         return (rc == true) ? OGS_OK : OGS_ERROR;
 
@@ -521,7 +578,7 @@ int ogs_sbi_discover_only(ogs_sbi_xact_t *xact)
     ogs_sbi_nf_instance_t *nf_instance = NULL;
 
     ogs_sbi_object_t *sbi_object = NULL;
-    ogs_sbi_service_type_e service_type = OGS_SBI_SERVICE_TYPE_NULL;
+    OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
 
     OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
@@ -529,9 +586,9 @@ int ogs_sbi_discover_only(ogs_sbi_xact_t *xact)
 
     sbi_object = xact->sbi_object;
     ogs_assert(sbi_object);
-    service_type = xact->service_type;
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
+    service_name = xact->service_name;
+    ogs_assert(service_name);
+    target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
     ogs_assert(target_nf_type);
     requester_nf_type = xact->requester_nf_type;
     ogs_assert(requester_nf_type);
@@ -546,7 +603,7 @@ int ogs_sbi_discover_only(ogs_sbi_xact_t *xact)
         ogs_sbi_request_t *request = NULL;
 
         ogs_warn("Try to discover [%s]",
-                    ogs_sbi_service_type_to_name(service_type));
+                OpenAPI_service_name_ToString(service_name));
 
         client = NF_INSTANCE_CLIENT(nf_instance);
         if (!client) {
@@ -572,7 +629,7 @@ int ogs_sbi_discover_only(ogs_sbi_xact_t *xact)
     }
 
     ogs_error("Cannot discover [%s]",
-                ogs_sbi_service_type_to_name(service_type));
+            OpenAPI_service_name_ToString(service_name));
 
     return OGS_NOTFOUND;
 }
@@ -580,15 +637,10 @@ int ogs_sbi_discover_only(ogs_sbi_xact_t *xact)
 bool ogs_sbi_send_request_to_nf_instance(
         ogs_sbi_nf_instance_t *nf_instance, ogs_sbi_xact_t *xact)
 {
-    bool rc;
     ogs_sbi_request_t *request = NULL;
     ogs_sbi_client_t *client = NULL;
 
-    ogs_sbi_object_t *sbi_object = NULL;
-
     ogs_assert(xact);
-    sbi_object = xact->sbi_object;
-    ogs_assert(sbi_object);
     request = xact->request;
     ogs_assert(request);
 
@@ -650,6 +702,26 @@ bool ogs_sbi_send_request_to_nf_instance(
 #endif
     }
 
+    if (ogs_sbi_send_request_with_sepp_discovery(client, xact) == false) {
+        ogs_sbi_xact_remove(xact);
+        return false;
+    }
+
+    return true;
+}
+
+bool ogs_sbi_send_request_with_sepp_discovery(
+        ogs_sbi_client_t *client, ogs_sbi_xact_t *xact)
+{
+    bool rc;
+    ogs_sbi_request_t *request = NULL;
+
+    ogs_assert(xact);
+    request = xact->request;
+    ogs_assert(request);
+
+    ogs_assert(client);
+
     if (client->fqdn && ogs_sbi_fqdn_in_vplmn(client->fqdn) == true) {
         ogs_sbi_client_t *sepp_client = NULL, *nrf_client = NULL;
 
@@ -662,7 +734,6 @@ bool ogs_sbi_send_request_to_nf_instance(
             ogs_error("No SEPP(%p) and NRF(%p) [%s]",
                     sepp_client, nrf_client, client->fqdn);
 
-            ogs_sbi_xact_remove(xact);
             return false;
 
         } else if (!sepp_client) {
@@ -672,7 +743,6 @@ bool ogs_sbi_send_request_to_nf_instance(
             xact->target_apiroot = ogs_sbi_client_apiroot(client);
             if (!xact->target_apiroot) {
                 ogs_error("ogs_strdup(xact->target_apiroot) failed");
-                ogs_sbi_xact_remove(xact);
                 return false;
             }
 
@@ -680,7 +750,6 @@ bool ogs_sbi_send_request_to_nf_instance(
                         OpenAPI_nf_type_SEPP, xact->requester_nf_type, NULL);
             if (!nrf_request) {
                 ogs_error("ogs_nnrf_disc_build_discover() failed");
-                ogs_sbi_xact_remove(xact);
                 return false;
             }
 
@@ -689,7 +758,6 @@ bool ogs_sbi_send_request_to_nf_instance(
                     OGS_UINT_TO_POINTER(xact->id));
             if (rc == false) {
                 ogs_error("ogs_sbi_client_send_request() failed");
-                ogs_sbi_xact_remove(xact);
             }
 
             ogs_sbi_request_free(nrf_request);
@@ -703,7 +771,6 @@ bool ogs_sbi_send_request_to_nf_instance(
             OGS_UINT_TO_POINTER(xact->id));
     if (rc == false) {
         ogs_error("ogs_sbi_send_request_to_client() failed");
-        ogs_sbi_xact_remove(xact);
     }
 
     return rc;
@@ -779,63 +846,88 @@ bool ogs_sbi_send_request_to_client(
     return rc;
 }
 
-bool ogs_sbi_send_notification_request(
-        ogs_sbi_service_type_e service_type,
+bool ogs_sbi_send_request_to_nrf(
+        OpenAPI_service_name_e nrf_service_name,
         ogs_sbi_discovery_option_t *discovery_option,
+        ogs_sbi_client_cb_f client_cb,
         ogs_sbi_request_t *request, void *data)
 {
     bool rc;
-    ogs_sbi_client_t *client = NULL, *scp_client = NULL;
-    OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
+    ogs_sbi_client_t *nrf_client = NULL, *scp_client = NULL;
+    ogs_sbi_client_delegated_mode_e mode = OGS_SBI_CLIENT_DELEGATED_AUTO;
 
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
-    ogs_assert(target_nf_type);
+    ogs_assert(nrf_service_name);
     ogs_assert(request);
 
     scp_client = NF_INSTANCE_CLIENT(ogs_sbi_self()->scp_instance);
-    if (target_nf_type == OpenAPI_nf_type_NRF)
-        client = NF_INSTANCE_CLIENT(ogs_sbi_self()->nrf_instance);
-    else {
-        ogs_fatal("Not implemented[%s]",
-                ogs_sbi_service_type_to_name(service_type));
-        ogs_assert_if_reached();
-    }
+    nrf_client = NF_INSTANCE_CLIENT(ogs_sbi_self()->nrf_instance);
 
-    if (scp_client) {
-        /*************************
-         * INDIRECT COMMUNICATION
-         *************************/
-        build_default_discovery_parameter(
-            request, service_type, discovery_option);
+    /* Decide which delegated mode to use */
+    if (nrf_service_name == OpenAPI_service_name_nnrf_nfm)
+        mode = ogs_sbi_self()->client_delegated_config.nrf.nfm;
+    else if (nrf_service_name == OpenAPI_service_name_nnrf_disc)
+        mode = ogs_sbi_self()->client_delegated_config.nrf.disc;
+    /* else if it's some other Nnrf service, fallback to AUTO or keep default */
 
-        rc = ogs_sbi_client_send_via_scp_or_sepp(
-                scp_client, ogs_sbi_client_handler, request, data);
-        ogs_expect(rc == true);
-
-    } else if (client) {
-
-        /***********************
-         * DIRECT COMMUNICATION
-         ***********************/
-
-        /* NRF is available */
-        rc = ogs_sbi_client_send_request(
-                client, ogs_sbi_client_handler, request, data);
-        ogs_expect(rc == true);
-
-
-    } else {
-        ogs_fatal("[%s:%s] Cannot send request [%s:%s:%s]",
-                client ? "CLIENT" : "No-CLIENT",
-                scp_client ? "SCP" : "No-SCP",
-                ogs_sbi_service_type_to_name(service_type),
+    switch (mode) {
+    case OGS_SBI_CLIENT_DELEGATED_NO:
+        /* NO => Direct communication (NRF must exist) */
+        if (!nrf_client) {
+            ogs_fatal("[No-NRF] Cannot send request [%s:%s:%s]",
+                OpenAPI_service_name_ToString(nrf_service_name),
                 request->h.service.name, request->h.api.version);
-        rc = false;
-        ogs_assert_if_reached();
+            ogs_assert_if_reached();
+            return false;
+        }
+        /* Send directly to NRF */
+        rc = ogs_sbi_client_send_request(nrf_client, client_cb,
+                                         request, data);
+        ogs_expect(rc == true);
+        break;
+
+    case OGS_SBI_CLIENT_DELEGATED_YES:
+        /* YES => Indirect communication (SCP must exist) */
+        if (!scp_client) {
+            ogs_fatal("[No-SCP] Cannot send request [%s:%s:%s]",
+                OpenAPI_service_name_ToString(nrf_service_name),
+                request->h.service.name, request->h.api.version);
+            ogs_assert_if_reached();
+            return false;
+        }
+        /* Indirect via SCP, build discovery parameter if needed */
+        build_default_discovery_parameter(request, nrf_service_name,
+                                          discovery_option);
+        rc = ogs_sbi_client_send_via_scp_or_sepp(scp_client, client_cb,
+                                                 request, data);
+        ogs_expect(rc == true);
+        break;
+
+    case OGS_SBI_CLIENT_DELEGATED_AUTO:
+    default:
+        /*
+         * AUTO => If SCP is present, use it; otherwise direct.
+         */
+        if (scp_client) {
+            build_default_discovery_parameter(request, nrf_service_name,
+                                              discovery_option);
+            rc = ogs_sbi_client_send_via_scp_or_sepp(scp_client, client_cb,
+                                                     request, data);
+            ogs_expect(rc == true);
+        } else if (nrf_client) {
+            rc = ogs_sbi_client_send_request(nrf_client, client_cb,
+                                             request, data);
+            ogs_expect(rc == true);
+        } else {
+            ogs_fatal("[No-NRF:No-SCP] Cannot send request [%s:%s:%s]",
+                OpenAPI_service_name_ToString(nrf_service_name),
+                request->h.service.name, request->h.api.version);
+            ogs_assert_if_reached();
+            return false;
+        }
+        break;
     }
 
-    return true;
+    return rc;
 }
 
 bool ogs_sbi_send_response(ogs_sbi_stream_t *stream, int status)
@@ -913,6 +1005,14 @@ static int sepp_discover_handler(
         strerror = ogs_msprintf("No SearchResult");
         goto cleanup;
     }
+    if (!message.SearchResult->validity_period) {
+        strerror = ogs_msprintf("No SearchResult.validity_period");
+        goto cleanup;
+    }
+    if (!message.SearchResult->nf_instances) {
+        strerror = ogs_msprintf("No SearchResult.nf_instances");
+        goto cleanup;
+    }
 
     ogs_nnrf_disc_handle_nf_discover_search_result(message.SearchResult);
 
@@ -963,15 +1063,15 @@ cleanup:
 
 static void build_default_discovery_parameter(
         ogs_sbi_request_t *request,
-        ogs_sbi_service_type_e service_type,
+        OpenAPI_service_name_e service_name,
         ogs_sbi_discovery_option_t *discovery_option)
 {
     OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
     OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
     ogs_sbi_discovery_option_t *local_discovery_option = NULL;
 
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
+    ogs_assert(service_name);
+    target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
     ogs_assert(target_nf_type);
     requester_nf_type = NF_INSTANCE_TYPE(ogs_sbi_self()->nf_instance);
     ogs_assert(requester_nf_type);
@@ -992,8 +1092,7 @@ static void build_default_discovery_parameter(
 
     if (!discovery_option->num_of_service_names) {
         ogs_sbi_discovery_option_add_service_names(
-                discovery_option,
-                (char *)ogs_sbi_service_type_to_name(service_type));
+                discovery_option, service_name);
     }
 
     ogs_sbi_header_set(request->http.headers,
@@ -1009,9 +1108,7 @@ static void build_default_discovery_parameter(
                     OGS_SBI_CUSTOM_DISCOVERY_REQUESTER_NF_INSTANCE_ID,
                     discovery_option->requester_nf_instance_id);
         }
-        if (ogs_sbi_self()->discovery_config.
-                no_service_names == false &&
-            discovery_option->num_of_service_names) {
+        if (discovery_option->num_of_service_names) {
             bool rc = false;
 
             /* send array items separated by a comma */
@@ -1044,7 +1141,8 @@ static void build_default_discovery_parameter(
             if (rc == false)
                 ogs_warn("invalid service names failed[%d:%s]",
                             discovery_option->num_of_service_names,
-                            discovery_option->service_names[0]);
+                            OpenAPI_service_name_ToString(
+                                discovery_option->service_names[0]));
         }
 
         if (discovery_option->num_of_target_plmn_list) {

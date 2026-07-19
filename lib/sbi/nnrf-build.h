@@ -26,7 +26,7 @@ extern "C" {
 
 OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
         ogs_sbi_nf_instance_t *nf_instance,
-        const char *service_name,
+        const OpenAPI_service_name_e service_name,
         ogs_sbi_discovery_option_t *discovery_option,
         bool service_map);
 void ogs_nnrf_nfm_free_nf_profile(OpenAPI_nf_profile_t *NFProfile);
@@ -42,6 +42,7 @@ ogs_sbi_request_t *ogs_nnrf_nfm_build_status_update(
 ogs_sbi_request_t *ogs_nnrf_nfm_build_status_unsubscribe(
         ogs_sbi_subscription_data_t *subscription_data);
 ogs_sbi_request_t *ogs_nnrf_nfm_build_profile_retrieve(char *nf_instance_id);
+ogs_sbi_request_t *ogs_nnrf_nfm_build_nflist_retrieve(void);
 
 ogs_sbi_request_t *ogs_nnrf_disc_build_discover(
         OpenAPI_nf_type_e target_nf_type,

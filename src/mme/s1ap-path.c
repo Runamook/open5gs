@@ -173,6 +173,12 @@ int s1ap_send_to_nas(enb_ue_t *enb_ue,
     ogs_assert(enb_ue);
     ogs_assert(nasPdu);
 
+    if (nasPdu->size < sizeof(ogs_nas_emm_header_t)) {
+        ogs_error("NAS PDU too short [%d]", (int)nasPdu->size);
+        enb_ue_remove(enb_ue);
+        return OGS_ERROR;
+    }
+
     mme_ue = mme_ue_find_by_id(enb_ue->mme_ue_id);
 
     /* The Packet Buffer(pkbuf_t) for NAS message MUST make a HEADROOM.
@@ -194,27 +200,56 @@ int s1ap_send_to_nas(enb_ue_t *enb_ue,
         break;
     case OGS_NAS_SECURITY_HEADER_INTEGRITY_PROTECTED:
         security_header_type.integrity_protected = 1;
-        ogs_pkbuf_pull(nasbuf, 6);
         break;
     case OGS_NAS_SECURITY_HEADER_INTEGRITY_PROTECTED_AND_CIPHERED:
         security_header_type.integrity_protected = 1;
         security_header_type.ciphered = 1;
-        ogs_pkbuf_pull(nasbuf, 6);
         break;
     case OGS_NAS_SECURITY_HEADER_INTEGRITY_PROTECTED_AND_NEW_SECURITY_CONTEXT:
         security_header_type.integrity_protected = 1;
         security_header_type.new_security_context = 1;
-        ogs_pkbuf_pull(nasbuf, 6);
         break;
     case OGS_NAS_SECURITY_HEADER_INTEGRITY_PROTECTED_AND_CIPHTERD_WITH_NEW_INTEGRITY_CONTEXT:
         security_header_type.integrity_protected = 1;
         security_header_type.ciphered = 1;
         security_header_type.new_security_context = 1;
-        ogs_pkbuf_pull(nasbuf, 6);
         break;
     default:
         ogs_error("Not implemented(security header type:0x%x)",
                 sh->security_header_type);
+        ogs_pkbuf_free(nasbuf);
+        enb_ue_remove(enb_ue);
+        return OGS_ERROR;
+    }
+
+    /*
+     * Skip the 6-octet NAS security header for integrity-protected messages.
+     * ogs_pkbuf_pull() returns NULL when the buffer is shorter than the
+     * requested length, so a protected NAS-PDU that is too short to even
+     * contain its own security header is rejected here instead of being
+     * parsed from a buffer that was never advanced.
+     *
+     * The PLAIN and SERVICE_REQUEST formats carry no security header and
+     * must not be pulled; both leave integrity_protected == 0.
+     */
+    if (security_header_type.integrity_protected) {
+        if (!ogs_pkbuf_pull(nasbuf, sizeof(ogs_nas_eps_security_header_t))) {
+            ogs_error("NAS PDU too short for security header [%d]",
+                    (int)nasPdu->size);
+            ogs_pkbuf_free(nasbuf);
+            enb_ue_remove(enb_ue);
+            return OGS_ERROR;
+        }
+    }
+
+    /*
+     * Make sure the (post-security-header) NAS message is large enough to
+     * hold the EMM header that is dereferenced through 'h' below. This also
+     * covers ciphered messages: the length is unchanged by decoding.
+     */
+    if (nasbuf->len < sizeof(ogs_nas_emm_header_t)) {
+        ogs_error("NAS PDU too short for EMM header [%d]", (int)nasbuf->len);
+        ogs_pkbuf_free(nasbuf);
         enb_ue_remove(enb_ue);
         return OGS_ERROR;
     }
@@ -223,6 +258,7 @@ int s1ap_send_to_nas(enb_ue_t *enb_ue,
         if (nas_eps_security_decode(mme_ue,
                 security_header_type, nasbuf) != OGS_OK) {
             ogs_error("nas_eps_security_decode failed()");
+            ogs_pkbuf_free(nasbuf);
             enb_ue_remove(enb_ue);
             return OGS_ERROR;
         }
@@ -810,6 +846,10 @@ int s1ap_send_handover_request(
             source_totarget_transparentContainer);
     if (!s1apbuf) {
         ogs_error("s1ap_build_handover_request() failed");
+        /* Release the target enb_ue allocated above before returning,
+         * otherwise a build failure leaks the context from enb_ue_pool. */
+        enb_ue_source_deassociate_target(target_ue);
+        enb_ue_remove(target_ue);
         return OGS_ERROR;
     }
 
@@ -873,27 +913,16 @@ int s1ap_send_error_indication(
     return rv;
 }
 
-int s1ap_send_error_indication2(
-        mme_ue_t *mme_ue, S1AP_Cause_PR group, long cause)
+int s1ap_send_error_indication1(
+        enb_ue_t *enb_ue, S1AP_Cause_PR group, long cause)
 {
     int rv;
     mme_enb_t *enb;
-    enb_ue_t *enb_ue;
 
     S1AP_MME_UE_S1AP_ID_t mme_ue_s1ap_id;
     S1AP_ENB_UE_S1AP_ID_t enb_ue_s1ap_id;
 
-    if (!mme_ue) {
-        ogs_error("UE(mme-ue) context has already been removed");
-        return OGS_NOTFOUND;
-    }
-
-    enb_ue = enb_ue_find_by_id(mme_ue->enb_ue_id);
-    if (!enb_ue) {
-        ogs_error("S1 context has already been removed");
-        return OGS_NOTFOUND;
-    }
-
+    ogs_assert(enb_ue);
     enb = mme_enb_find_by_id(enb_ue->enb_id);
     if (!enb) {
         ogs_error("eNB has already been removed");
@@ -908,6 +937,25 @@ int s1ap_send_error_indication2(
     ogs_expect(rv == OGS_OK);
 
     return rv;
+}
+
+int s1ap_send_error_indication2(
+        mme_ue_t *mme_ue, S1AP_Cause_PR group, long cause)
+{
+    enb_ue_t *enb_ue;
+
+    if (!mme_ue) {
+        ogs_error("UE(mme-ue) context has already been removed");
+        return OGS_NOTFOUND;
+    }
+
+    enb_ue = enb_ue_find_by_id(mme_ue->enb_ue_id);
+    if (!enb_ue) {
+        ogs_error("S1 context has already been removed");
+        return OGS_NOTFOUND;
+    }
+
+    return s1ap_send_error_indication1(enb_ue, group, cause);
 }
 
 int s1ap_send_s1_reset_ack(

@@ -161,12 +161,17 @@ $ make test
 
 #### 3. Open5GS
 
+**Tip:** MongoDB is used as the database for PCF/UDR and PCRF/HSS.
+{: .notice--info}
+
+**Note:** If you already have an external MongoDB server, you can skip the MongoDB step below and add the `--no-install-recommends` flag when installing the Open5GS packages (e.g. `sudo apt install --no-install-recommends open5gs`).
+{: .notice--warning}
 
 The Open5GS package is available on the recent versions of *Ubuntu*.
 ```bash
 # Install the MongoDB Packages
-$ curl -fsSL https://pgp.mongodb.com/server-6.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg --dearmor
-$ echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+$ curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+$ echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 $ sudo apt update
 $ sudo apt install mongodb-org
 

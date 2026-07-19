@@ -32,6 +32,7 @@ static void server_final(void);
 
 static int server_start(ogs_sbi_server_t *server,
         int (*cb)(ogs_sbi_request_t *request, void *data));
+static void server_graceful_shutdown(ogs_sbi_server_t *server);
 static void server_stop(ogs_sbi_server_t *server);
 
 static bool server_send_rspmem_persistent(
@@ -44,11 +45,15 @@ static ogs_sbi_server_t *server_from_stream(ogs_sbi_stream_t *stream);
 static ogs_pool_id_t id_from_stream(ogs_sbi_stream_t *stream);
 static void *stream_find_by_id(ogs_pool_id_t id);
 
+static void xact_attach(ogs_sbi_stream_t *stream, ogs_sbi_xact_t *xact);
+static void xact_detach(ogs_sbi_xact_t *xact);
+
 const ogs_sbi_server_actions_t ogs_mhd_server_actions = {
     server_init,
     server_final,
 
     server_start,
+    server_graceful_shutdown,
     server_stop,
 
     server_send_rspmem_persistent,
@@ -57,6 +62,9 @@ const ogs_sbi_server_actions_t ogs_mhd_server_actions = {
     server_from_stream,
     id_from_stream,
     stream_find_by_id,
+
+    xact_attach,
+    xact_detach,
 };
 
 static void run(short when, ogs_socket_t fd, void *data);
@@ -108,6 +116,15 @@ typedef struct ogs_sbi_session_s {
      */
     ogs_timer_t             *timer;
 
+    /*
+     * Outbound SBI transactions originated by this session. Drained
+     * on session_remove() so response timers are returned to the
+     * pool immediately when the inbound HTTP connection goes away.
+     * See the matching xact_list on the HTTP/2 backend (stream_s in
+     * lib/sbi/nghttp2-server.c).
+     */
+    ogs_list_t              xact_list;
+
     void *data;
 } ogs_sbi_session_t;
 
@@ -139,8 +156,11 @@ static ogs_sbi_session_t *session_add(ogs_sbi_server_t *server,
     sbi_sess->request = request;
     sbi_sess->connection = connection;
 
+    ogs_list_init(&sbi_sess->xact_list);
+
     sbi_sess->timer = ogs_timer_add(
-            ogs_app()->timer_mgr, session_timer_expired, sbi_sess);
+            ogs_app()->timer_mgr, session_timer_expired,
+            OGS_UINT_TO_POINTER(sbi_sess->id));
     if (!sbi_sess->timer) {
         ogs_error("ogs_timer_add() failed");
         ogs_pool_id_free(&session_pool, sbi_sess);
@@ -157,6 +177,73 @@ static ogs_sbi_session_t *session_add(ogs_sbi_server_t *server,
     return sbi_sess;
 }
 
+static void xact_attach(ogs_sbi_stream_t *stream, ogs_sbi_xact_t *xact)
+{
+    ogs_sbi_session_t *sbi_sess = (ogs_sbi_session_t *)stream;
+
+    ogs_assert(sbi_sess);
+    ogs_assert(xact);
+
+    /*
+     * Invariant: the server-layer wrapper (ogs_sbi_server_attach_xact)
+     * already filtered out the already-attached case. Reaching the
+     * backend with to_stream_list set is a programming error.
+     */
+    ogs_assert(!xact->to_stream_list);
+
+    /*
+     * Cache the list head so xact_detach() can unlink in O(1).
+     * to_stream_list serves as both attachment flag and cached head.
+     */
+    ogs_list_add(&sbi_sess->xact_list, &xact->to_stream_node);
+    xact->to_stream_list = &sbi_sess->xact_list;
+}
+
+static void xact_detach(ogs_sbi_xact_t *xact)
+{
+    ogs_assert(xact);
+
+    /*
+     * Invariant: the server-layer wrapper (ogs_sbi_server_detach_xact)
+     * already filtered out the not-attached case. Reaching the
+     * backend with to_stream_list cleared is a programming error.
+     */
+    ogs_assert(xact->to_stream_list);
+
+    ogs_list_remove(xact->to_stream_list, &xact->to_stream_node);
+
+    xact->to_stream_list = NULL;
+    xact->assoc_stream_id = OGS_INVALID_POOL_ID;
+}
+
+/*
+ * Cancel outbound SBI transactions originated by this session before
+ * tearing it down. Same rationale as stream_remove_xact_all() on the
+ * HTTP/2 backend: release response timers immediately instead of
+ * holding pool slots until the SBI client wait timeout.
+ */
+static void session_remove_xact_all(ogs_sbi_session_t *sbi_sess)
+{
+    ogs_sbi_xact_t *xact = NULL, *next_xact = NULL;
+
+    ogs_assert(sbi_sess);
+
+    ogs_list_for_each_entry_safe(
+            &sbi_sess->xact_list, next_xact, xact, to_stream_node) {
+        /*
+         * Logged at error level so the cancellation shows up in
+         * production traces alongside the upstream NF activity that
+         * was abandoned. See the matching log in stream_remove() on
+         * the HTTP/2 backend.
+         */
+        ogs_error("Canceling pending outbound SBI transaction "
+                "on MHD session close [xact:%d,session:%d,service:%s]",
+                (int)xact->id, (int)sbi_sess->id,
+                OpenAPI_service_name_ToString(xact->service_name));
+        ogs_sbi_xact_remove(xact);
+    }
+}
+
 static void session_remove(ogs_sbi_session_t *sbi_sess)
 {
     struct MHD_Connection *connection;
@@ -167,6 +254,8 @@ static void session_remove(ogs_sbi_session_t *sbi_sess)
     ogs_assert(server);
 
     ogs_list_remove(&server->session_list, sbi_sess);
+
+    session_remove_xact_all(sbi_sess);
 
     ogs_assert(sbi_sess->timer);
     ogs_timer_delete(sbi_sess->timer);
@@ -181,15 +270,22 @@ static void session_remove(ogs_sbi_session_t *sbi_sess)
 
 static void session_timer_expired(void *data)
 {
-    ogs_sbi_session_t *sbi_sess = data;
+    ogs_pool_id_t sbi_sess_id = OGS_POINTER_TO_UINT(data);
+    ogs_sbi_session_t *sbi_sess = NULL;
 
-    ogs_assert(sbi_sess);
+    if (sbi_sess_id >= OGS_MIN_POOL_ID && sbi_sess_id <= OGS_MAX_POOL_ID)
+        sbi_sess = ogs_pool_find_by_id(&session_pool, sbi_sess_id);
+    else
+        ogs_error("Invalid Session ID [%d]", sbi_sess_id);
 
     ogs_fatal("An HTTP request was received, "
                 "but the HTTP response is missing.");
     ogs_fatal("Please send the related pcap files for this case.");
 
-    session_remove(sbi_sess);
+    if (sbi_sess)
+        session_remove(sbi_sess);
+    else
+        ogs_error("No Session Context");
 
     ogs_assert_if_reached();
 }
@@ -285,6 +381,13 @@ static int server_start(ogs_sbi_server_t *server,
         ogs_info("mhd_server() [%s]:%d", OGS_ADDR(addr, buf), OGS_PORT(addr));
 
     return OGS_OK;
+}
+
+static void server_graceful_shutdown(ogs_sbi_server_t *server)
+{
+    ogs_assert(server);
+
+    /* No need to shutdown gracefully */
 }
 
 static void server_stop(ogs_sbi_server_t *server)
@@ -491,9 +594,11 @@ static _MHD_Result access_handler(
         size_t *upload_data_size,
         void **con_cls)
 {
+    int rv;
     ogs_sbi_server_t *server = NULL;
     ogs_sbi_request_t *request = NULL;
     ogs_sbi_session_t *sbi_sess = NULL;
+    ogs_pool_id_t sbi_sess_id = OGS_INVALID_POOL_ID;
 
     server = cls;
     ogs_assert(server);
@@ -526,8 +631,7 @@ static _MHD_Result access_handler(
         if (ogs_sbi_header_get(request->http.headers, "Content-Length") ||
             ogs_sbi_header_get(request->http.headers, "Transfer-Encoding")) {
 
-            // FIXME : check if POST_DATA is on MHD_POSTDATA_KIND
-
+            /* FIXME : check if POST_DATA is on MHD_POSTDATA_KIND */
             return MHD_YES;
         }
 
@@ -535,28 +639,42 @@ static _MHD_Result access_handler(
     }
 
     if (*upload_data_size != 0) {
+        char *content = NULL;
         size_t offset = 0;
+        size_t new_length = 0;
+
+        if (*upload_data_size > OGS_MAX_SDU_LEN -
+                request->http.content_length) {
+            ogs_error("Payload too large : Content-Length[%d], "
+                    "upload_data_size[%d]",
+                    (int)request->http.content_length,
+                    (int)*upload_data_size);
+            *upload_data_size = 0;
+            return MHD_NO;
+        }
+
+        new_length = request->http.content_length + *upload_data_size;
+        offset = request->http.content_length;
 
         if (request->http.content == NULL) {
-            request->http.content_length = *upload_data_size;
-            request->http.content =
-                (char*)ogs_malloc(request->http.content_length + 1);
-            ogs_assert(request->http.content);
+            ogs_assert(request->http.content_length == 0);
+
+            content = ogs_malloc(new_length + 1);
         } else {
-            offset = request->http.content_length;
-            if ((request->http.content_length +
-                        *upload_data_size) > OGS_MAX_SDU_LEN) {
-                ogs_error("Overflow : Content-Length[%d], upload_data_size[%d]",
-                            (int)request->http.content_length,
-                            (int)*upload_data_size);
-                *upload_data_size = 0;
-                return MHD_YES;
-            }
-            request->http.content_length += *upload_data_size;
-            request->http.content = (char *)ogs_realloc(
-                    request->http.content, request->http.content_length + 1);
-            ogs_assert(request->http.content);
+            content = ogs_realloc(request->http.content, new_length + 1);
         }
+
+        if (!content) {
+            ogs_error("Memory allocation failed : Content-Length[%d], "
+                    "upload_data_size[%d]",
+                    (int)request->http.content_length,
+                    (int)*upload_data_size);
+            *upload_data_size = 0;
+            return MHD_NO;
+        }
+
+        request->http.content = content;
+        request->http.content_length = new_length;
 
         memcpy(request->http.content + offset, upload_data, *upload_data_size);
         request->http.content[request->http.content_length] = '\0';
@@ -571,10 +689,22 @@ suspend:
 
     sbi_sess = session_add(server, request, connection);
     ogs_assert(sbi_sess);
+    sbi_sess_id = sbi_sess->id;
 
     ogs_assert(server->cb);
-    if (server->cb(request, OGS_UINT_TO_POINTER(sbi_sess->id)) != OGS_OK) {
+    rv = server->cb(request, OGS_UINT_TO_POINTER(sbi_sess_id));
+    if (rv != OGS_OK) {
         ogs_warn("server callback error");
+
+        /* The callback may have sent a response and removed the session. */
+        sbi_sess = ogs_pool_find_by_id(&session_pool, sbi_sess_id);
+        if (!sbi_sess) {
+            ogs_error("The server callback already sent a response but "
+                    "returned an error; it must return OGS_OK instead [%d]",
+                    sbi_sess_id);
+            return MHD_YES;
+        }
+
         ogs_assert(true ==
                 ogs_sbi_server_send_error((ogs_sbi_stream_t *)sbi_sess,
                     OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -280,14 +280,16 @@ int amf_namf_comm_handle_n1_n2_message_transfer(
                 ogs_assert(server);
 
                 memset(&header, 0, sizeof(header));
-                header.service.name = (char *)OGS_SBI_SERVICE_NAME_NAMF_COMM;
+                header.service.name =
+                    OpenAPI_service_name_ToString(
+                            OpenAPI_service_name_namf_comm);
                 header.api.version = (char *)OGS_SBI_API_V1;
                 header.resource.component[0] =
                     (char *)OGS_SBI_RESOURCE_NAME_UE_CONTEXTS;
                 header.resource.component[1] = amf_ue->supi;
                 header.resource.component[2] =
                     (char *)OGS_SBI_RESOURCE_NAME_N1_N2_MESSAGES;
-                header.resource.component[3] = sess->sm_context.ref;
+                header.resource.component[3] = sess->sm_context_ref;
 
                 sendmsg.http.location = ogs_sbi_server_uri(server, &header);
 
@@ -342,14 +344,16 @@ int amf_namf_comm_handle_n1_n2_message_transfer(
             ogs_assert(server);
 
             memset(&header, 0, sizeof(header));
-            header.service.name = (char *)OGS_SBI_SERVICE_NAME_NAMF_COMM;
+            header.service.name =
+                OpenAPI_service_name_ToString(
+                        OpenAPI_service_name_namf_comm);
             header.api.version = (char *)OGS_SBI_API_V1;
             header.resource.component[0] =
                 (char *)OGS_SBI_RESOURCE_NAME_UE_CONTEXTS;
             header.resource.component[1] = amf_ue->supi;
             header.resource.component[2] =
                 (char *)OGS_SBI_RESOURCE_NAME_N1_N2_MESSAGES;
-            header.resource.component[3] = sess->sm_context.ref;
+            header.resource.component[3] = sess->sm_context_ref;
 
             sendmsg.http.location = ogs_sbi_server_uri(server, &header);
 
@@ -416,14 +420,16 @@ int amf_namf_comm_handle_n1_n2_message_transfer(
                 ogs_assert(server);
 
                 memset(&header, 0, sizeof(header));
-                header.service.name = (char *)OGS_SBI_SERVICE_NAME_NAMF_COMM;
+                header.service.name =
+                    OpenAPI_service_name_ToString(
+                            OpenAPI_service_name_namf_comm);
                 header.api.version = (char *)OGS_SBI_API_V1;
                 header.resource.component[0] =
                     (char *)OGS_SBI_RESOURCE_NAME_UE_CONTEXTS;
                 header.resource.component[1] = amf_ue->supi;
                 header.resource.component[2] =
                     (char *)OGS_SBI_RESOURCE_NAME_N1_N2_MESSAGES;
-                header.resource.component[3] = sess->sm_context.ref;
+                header.resource.component[3] = sess->sm_context_ref;
 
                 sendmsg.http.location = ogs_sbi_server_uri(server, &header);
 
@@ -490,8 +496,9 @@ int amf_namf_comm_handle_n1_n2_message_transfer(
         break;
 
     default:
-        ogs_error("Not implemented ngapIeType[%d]", ngapIeType);
-        ogs_assert_if_reached();
+        ogs_error("Unsupported ngapIeType[%d]", ngapIeType);
+        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+        break;
     }
 
     response = ogs_sbi_build_response(&sendmsg, status);
@@ -595,6 +602,7 @@ int amf_namf_callback_handle_sm_context_status(
         sess->n2_released == true &&
         sess->resource_status == OpenAPI_resource_status_RELEASED) {
         amf_nsmf_pdusession_handle_release_sm_context(
+                amf_ue, ran_ue_find_by_id(sess->ran_ue_id),
                 sess, AMF_RELEASE_SM_CONTEXT_NO_STATE);
     }
 
@@ -705,14 +713,14 @@ int amf_namf_callback_handle_dereg_notify(
 
     if (UDM_SDM_SUBSCRIBED(amf_ue)) {
         r = amf_ue_sbi_discover_and_send(
-                OGS_SBI_SERVICE_TYPE_NUDM_SDM, NULL,
+                OpenAPI_service_name_nudm_sdm, NULL,
                 amf_nudm_sdm_build_subscription_delete,
                 amf_ue, state, NULL);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
     } else if (PCF_AM_POLICY_ASSOCIATED(amf_ue)) {
         r = amf_ue_sbi_discover_and_send(
-                OGS_SBI_SERVICE_TYPE_NPCF_AM_POLICY_CONTROL,
+                OpenAPI_service_name_npcf_am_policy_control,
                 NULL,
                 amf_npcf_am_policy_control_build_delete,
                 amf_ue, state, NULL);
@@ -782,8 +790,6 @@ static int update_rat_res_array(cJSON *json_restrictions,
 static int update_rat_res(OpenAPI_change_item_t *item_change,
                           OpenAPI_list_t *restrictions)
 {
-    cJSON* json = item_change->new_value->json;
-    cJSON* json_restrictions;
 
     if (!item_change->path) {
         return OGS_ERROR;
@@ -792,7 +798,18 @@ static int update_rat_res(OpenAPI_change_item_t *item_change,
     switch (item_change->op) {
     case OpenAPI_change_type_REPLACE:
     case OpenAPI_change_type_ADD:
+    {
+        cJSON *json;
+
+        if ((!item_change->new_value) || (!item_change->new_value->json)) {
+            ogs_error("No 'new_value' field present");
+            return OGS_ERROR;
+        }
+        json = item_change->new_value->json;
+
         if (!strcmp(item_change->path, "")) {
+            cJSON *json_restrictions;
+
             if (!cJSON_IsObject(json)) {
                 ogs_error("Invalid type of am-data");
             }
@@ -813,6 +830,7 @@ static int update_rat_res(OpenAPI_change_item_t *item_change,
             return update_rat_res_add_one(json, restrictions, i);
         }
         return OGS_OK;
+    }
 
     case OpenAPI_change_type__REMOVE:
         if (!strcmp(item_change->path, "")) {
@@ -886,22 +904,32 @@ static int update_ambr_check_obj(cJSON *obj, ogs_bitrate_t *ambr,
 static int update_ambr(OpenAPI_change_item_t *item_change,
                        ogs_bitrate_t *ambr, bool *ambr_changed)
 {
-    cJSON* json = item_change->new_value->json;
+    cJSON *json = NULL;
 
     if (!item_change->path) {
+        ogs_error("No 'path' field present");
         return OGS_ERROR;
     }
 
     switch (item_change->op) {
     case OpenAPI_change_type_REPLACE:
     case OpenAPI_change_type_ADD:
+        if (!item_change->new_value || !item_change->new_value->json) {
+            ogs_error("No 'new_value' field present");
+            return OGS_ERROR;
+        }
+
+        json = item_change->new_value->json;
+
         if (!strcmp(item_change->path, "")) {
             if (!cJSON_IsObject(json)) {
                 ogs_error("Invalid type of am-data");
+                return OGS_ERROR;
             }
             return update_ambr_check_obj(
-                cJSON_GetObjectItemCaseSensitive(json, "subscribedUeAmbr"),
-                ambr, ambr_changed);
+                    cJSON_GetObjectItemCaseSensitive(
+                        json, "subscribedUeAmbr"),
+                    ambr, ambr_changed);
         } else if (!strcmp(item_change->path, "/subscribedUeAmbr")) {
             return update_ambr_check_obj(json, ambr, ambr_changed);
         } else if (!strcmp(item_change->path, "/subscribedUeAmbr/uplink")) {
@@ -911,12 +939,12 @@ static int update_ambr(OpenAPI_change_item_t *item_change,
         }
         return OGS_OK;
 
-
     case OpenAPI_change_type__REMOVE:
         if (!strcmp(item_change->path, "/subscribedUeAmbr")) {
-            update_ambr_check_obj(NULL, ambr, ambr_changed);
+            return update_ambr_check_obj(NULL, ambr, ambr_changed);
         }
         return OGS_OK;
+
     default:
         return OGS_OK;
     }
@@ -1037,14 +1065,14 @@ int amf_namf_callback_handle_sdm_data_change_notify(
 
             if (UDM_SDM_SUBSCRIBED(amf_ue)) {
                 r = amf_ue_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NUDM_SDM, NULL,
+                        OpenAPI_service_name_nudm_sdm, NULL,
                         amf_nudm_sdm_build_subscription_delete,
                         amf_ue, state, NULL);
                 ogs_expect(r == OGS_OK);
                 ogs_assert(r != OGS_ERROR);
             } else if (PCF_AM_POLICY_ASSOCIATED(amf_ue)) {
                 r = amf_ue_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NPCF_AM_POLICY_CONTROL,
+                        OpenAPI_service_name_npcf_am_policy_control,
                         NULL,
                         amf_npcf_am_policy_control_build_delete,
                         amf_ue, state, NULL);
@@ -1093,7 +1121,6 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     ogs_sbi_response_t *response = NULL;
     ogs_sbi_message_t sendmsg;
     amf_ue_t *amf_ue = NULL;
-    ran_ue_t *ran_ue = NULL;
 
     OpenAPI_ambr_t *UeAmbr = NULL;
     OpenAPI_list_t *MmContextList = NULL;
@@ -1107,11 +1134,11 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     OpenAPI_key_amf_t Key_amf;
     OpenAPI_sc_type_e Tsc_type;
 
+    OpenAPI_ue_context_transfer_req_data_t *UeContextTransferReqData = NULL;
     OpenAPI_ue_context_transfer_rsp_data_t UeContextTransferRspData;
 
     ogs_sbi_nf_instance_t *pcf_nf_instance = NULL;
 
-    char *ue_context_id = NULL;
     char *encoded_gmm_capability = NULL;
     int status = OGS_SBI_HTTP_STATUS_OK;
     char hxkamf_string[OGS_KEYSTRLEN(OGS_SHA256_DIGEST_SIZE)];
@@ -1127,18 +1154,30 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     memset(&sendmsg, 0, sizeof(sendmsg));
     sendmsg.UeContextTransferRspData = &UeContextTransferRspData;
 
-    ue_context_id = recvmsg->h.resource.component[1];
-    if (!ue_context_id) {
+    if (!recvmsg->h.resource.component[1]) {
         status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
         strerror = ogs_msprintf("No UE context ID");
         goto cleanup;
     }
 
-    amf_ue = amf_ue_find_by_ue_context_id(ue_context_id);
+    amf_ue = amf_ue_find_by_ue_context_id(recvmsg->h.resource.component[1]);
     if (!amf_ue) {
         status = OGS_SBI_HTTP_STATUS_NOT_FOUND;
-        strerror = ogs_msprintf("CONTEXT_NOT_FOUND");
+        strerror = ogs_msprintf("Cannot find Context ID [%s]",
+                recvmsg->h.resource.component[1]);
         goto cleanup;
+    }
+
+    UeContextTransferReqData = recvmsg->UeContextTransferReqData;
+    if (!UeContextTransferReqData) {
+        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+        strerror = ogs_msprintf("[%s] No UeContextTransferReqData",
+                amf_ue->supi ? amf_ue->supi : recvmsg->h.resource.component[1]);
+        goto cleanup;
+    }
+
+    if (amf_ue->amf_ue_context_transfer_state != UE_CONTEXT_INITIAL_STATE) {
+        ogs_warn("Incorrect UE context transfer state");
     }
 
     if (amf_ue->supi) {
@@ -1195,8 +1234,8 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     UeContext._5g_mm_capability = encoded_gmm_capability;
 
     pcf_nf_instance = OGS_SBI_GET_NF_INSTANCE(
-            amf_ue->sbi.service_type_array[
-            OGS_SBI_SERVICE_TYPE_NPCF_AM_POLICY_CONTROL]);
+            amf_ue->sbi.service_name_array[
+            OpenAPI_service_name_npcf_am_policy_control]);
     if (pcf_nf_instance) {
         UeContext.pcf_id = pcf_nf_instance->id;
     } else {
@@ -1209,10 +1248,14 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     MmContextList = amf_namf_comm_encode_ue_mm_context_list(amf_ue);
     UeContext.mm_context_list = MmContextList;
 
-    if (recvmsg->UeContextTransferReqData->reason ==
+    if (UeContextTransferReqData->reason ==
             OpenAPI_transfer_reason_MOBI_REG) {
         SessionContextList =
-            amf_namf_comm_encode_ue_session_context_list(amf_ue);
+	            amf_namf_comm_encode_ue_session_context_list(amf_ue);
+        if (SessionContextList->count == 0) {
+            OpenAPI_list_free(SessionContextList);
+            SessionContextList = NULL;
+        }
         UeContext.session_context_list = SessionContextList;
     }
 
@@ -1221,6 +1264,8 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     response = ogs_sbi_build_response(&sendmsg, status);
     ogs_assert(response);
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    amf_ue->amf_ue_context_transfer_state = UE_CONTEXT_TRANSFER_OLD_AMF_STATE;
 
     if (encoded_gmm_capability)
         ogs_free(encoded_gmm_capability);
@@ -1245,13 +1290,19 @@ int amf_namf_comm_handle_ue_context_transfer_request(
     }
 
     /*
-     * Context TRANSFERRED !!!
-     * So, we removed UE context.
+     * Ue context is transfered, but we must keep the UE context until the
+     * registartion status update is received.
+     *
+     * TS 23.502
+     * 4.2.2.2.2 General Registration
+     *
+     * 10. [Conditional] new AMF to old AMF: Namf_Communication_RegistrationStatusUpdate
+     * (PDU Session ID(s) to be released due to slice not supported).
+	 * If the authentication/security procedure fails, then the Registration shall be
+     * rejected and the new AMF invokes the Namf_Communication_RegistrationStatusUpdate
+     * service operation with a reject indication towards the old AMF. The old AMF continues
+     * as if the UE context transfer service operation was never received.
      */
-    ran_ue = ran_ue_find_by_id(amf_ue->ran_ue_id);
-    if (ran_ue)
-        ran_ue_remove(ran_ue);
-    amf_ue_remove(amf_ue);
 
     return OGS_OK;
 
@@ -1352,10 +1403,13 @@ int amf_namf_comm_handle_ue_context_transfer_response(
         amf_namf_comm_decode_ue_mm_context_list(
                 amf_ue, UeContext->mm_context_list);
 
-    if (UeContext->session_context_list)
+    if (UeContext->session_context_list) {
         amf_namf_comm_decode_ue_session_context_list(
                 amf_ue, UeContext->session_context_list);
-
+        /* Save a list of sessions to be released on old AMF */
+        if (UeContext->mm_context_list)
+            amf_ue_save_to_release_session_list(amf_ue);
+    }
     /* TODO ueRadioCapability */
 
     return OGS_OK;
@@ -1381,7 +1435,7 @@ static char *amf_namf_comm_base64_encode_ue_security_capability(
     /* Security guarantee */
     num_of_octets = ogs_min(
             num_of_octets, sizeof(ue_security_capability) + 1);
-    enc_len = ogs_base64_encode_len(num_of_octets);
+    enc_len = ogs_base64_encoded_size(num_of_octets);
 
     enc = ogs_calloc(1, enc_len);
     ogs_assert(enc);
@@ -1389,7 +1443,8 @@ static char *amf_namf_comm_base64_encode_ue_security_capability(
     security_octets_string[0] = (uint8_t)
         OGS_NAS_5GS_REGISTRATION_REQUEST_UE_SECURITY_CAPABILITY_TYPE;
     memcpy(security_octets_string + 1, &ue_security_capability, num_of_octets);
-    ogs_base64_encode(enc , security_octets_string, num_of_octets);
+    ogs_assert(ogs_base64_encode_from_buffer(enc, enc_len,
+            (const uint8_t *)security_octets_string, num_of_octets) > 0);
 
     return enc;
 }
@@ -1423,7 +1478,7 @@ static char *amf_namf_comm_base64_encode_5gmm_capability(amf_ue_t *amf_ue)
     num_of_octets = ogs_min(
             num_of_octets, sizeof(ogs_nas_5gmm_capability_t) + 1);
 
-    enc_len = ogs_base64_encode_len(num_of_octets);
+    enc_len = ogs_base64_encoded_size(num_of_octets);
     enc = ogs_calloc(1, enc_len);
     ogs_assert(enc);
 
@@ -1432,7 +1487,8 @@ static char *amf_namf_comm_base64_encode_5gmm_capability(amf_ue_t *amf_ue)
             (uint8_t)OGS_NAS_5GS_REGISTRATION_REQUEST_5GMM_CAPABILITY_TYPE;
     memcpy(gmm_capability_octets_string + 1,
             &nas_gmm_capability, num_of_octets);
-    ogs_base64_encode(enc, gmm_capability_octets_string, num_of_octets);
+    ogs_assert(ogs_base64_encode_from_buffer(enc, enc_len,
+            (const uint8_t *)gmm_capability_octets_string, num_of_octets) > 0);
 
     return enc;
 }
@@ -1458,9 +1514,9 @@ static OpenAPI_list_t *amf_namf_comm_encode_ue_session_context_list(
         ogs_assert(sNSSAI);
 
         PduSessionContext->pdu_session_id = sess->psi;
-        ogs_assert(sess->sm_context.resource_uri);
+        ogs_assert(sess->sm_context_resource_uri);
         PduSessionContext->sm_context_ref =
-            ogs_strdup(sess->sm_context.resource_uri);
+            ogs_strdup(sess->sm_context_resource_uri);
 
         sNSSAI->sst = sess->s_nssai.sst;
         sNSSAI->sd = ogs_s_nssai_sd_to_string(sess->s_nssai.sd);
@@ -1573,9 +1629,11 @@ static ogs_nas_5gmm_capability_t
             (char*) ogs_calloc(sizeof(gmm_capability) + 1, sizeof(char));
     ogs_assert(gmm_capability_octets_string);
 
-    len = ogs_base64_decode(gmm_capability_octets_string, encoded);
+    len = ogs_base64_decode_to_buffer(
+            (uint8_t *)gmm_capability_octets_string,
+            sizeof(gmm_capability) + 1, encoded);
 
-    if (len == 0)
+    if (len <= 0)
         ogs_error("Gmm capability not decoded");
 
     ogs_assert(sizeof(gmm_capability_octets_string) <=
@@ -1606,10 +1664,12 @@ static ogs_nas_ue_security_capability_t
 
     memset(&ue_security_capability, 0, sizeof(ue_security_capability));
     ue_security_capability_octets_string =
-            (char*) ogs_calloc(sizeof(ue_security_capability), sizeof(char));
+            (char*) ogs_calloc(sizeof(ue_security_capability) + 1, sizeof(char));
     ogs_assert(ue_security_capability_octets_string);
 
-    ogs_base64_decode(ue_security_capability_octets_string, encoded);
+    ogs_base64_decode_to_buffer(
+            (uint8_t *)ue_security_capability_octets_string,
+            sizeof(ue_security_capability) + 1, encoded);
 
     ogs_assert(sizeof(ue_security_capability_octets_string) <=
             sizeof(ogs_nas_ue_security_capability_t) + 1);
@@ -1646,6 +1706,10 @@ static void amf_namf_comm_decode_ue_mm_context_list(
         int num_of_nssai_mapping = 0;
 
         MmContext = node->data;
+        if (!MmContext) {
+            ogs_error("No MmContext");
+            continue;
+        }
 
         AllowedNssaiList = MmContext->allowed_nssai;
         NssaiMappingList = MmContext->nssai_mapping_list;
@@ -1653,7 +1717,16 @@ static void amf_namf_comm_decode_ue_mm_context_list(
         OpenAPI_list_for_each(AllowedNssaiList, node1) {
             OpenAPI_snssai_t *AllowedNssai = node1->data;
 
-            ogs_assert(num_of_s_nssai < OGS_MAX_NUM_OF_SLICE);
+            if (!AllowedNssai) {
+                ogs_error("No allowedNssai");
+                continue;
+            }
+
+            if (num_of_s_nssai >= OGS_MAX_NUM_OF_SLICE) {
+                ogs_error("Too many allowedNssai [%d:%d]",
+                        num_of_s_nssai + 1, OGS_MAX_NUM_OF_SLICE);
+                break;
+            }
 
             amf_ue->allowed_nssai.s_nssai[num_of_s_nssai].sst =
                     (uint8_t)AllowedNssai->sst;
@@ -1666,9 +1739,24 @@ static void amf_namf_comm_decode_ue_mm_context_list(
 
         OpenAPI_list_for_each(NssaiMappingList, node1) {
             OpenAPI_nssai_mapping_t *NssaiMapping = node1->data;
-            OpenAPI_snssai_t *HSnssai = NssaiMapping->h_snssai;
+            OpenAPI_snssai_t *HSnssai = NULL;
 
-            ogs_assert(num_of_nssai_mapping < OGS_MAX_NUM_OF_SLICE);
+            if (!NssaiMapping) {
+                ogs_error("No nssaiMapping");
+                continue;
+            }
+
+            HSnssai = NssaiMapping->h_snssai;
+            if (!HSnssai) {
+                ogs_error("No hSnssai in nssaiMappingList");
+                continue;
+            }
+
+            if (num_of_nssai_mapping >= OGS_MAX_NUM_OF_SLICE) {
+                ogs_error("Too many nssaiMappingList [%d:%d]",
+                        num_of_nssai_mapping + 1, OGS_MAX_NUM_OF_SLICE);
+                break;
+            }
 
             amf_ue->allowed_nssai.s_nssai[num_of_nssai_mapping].
                     mapped_hplmn_sst = HSnssai->sst;
@@ -1684,6 +1772,7 @@ static void amf_namf_comm_decode_ue_mm_context_list(
                     MmContext->ue_security_capability);
         }
     }
+
 }
 
 static void amf_namf_comm_decode_ue_session_context_list(
@@ -1785,9 +1874,9 @@ static void amf_namf_comm_decode_ue_session_context_list(
         ogs_freeaddrinfo(addr);
         ogs_freeaddrinfo(addr6);
 
-        sess->sm_context.resource_uri =
+        sess->sm_context_resource_uri =
             ogs_strdup(PduSessionContext->sm_context_ref);
-        sess->sm_context.ref =
+        sess->sm_context_ref =
             ogs_strdup(message.h.resource.component[1]);
 
         memset(&sess->s_nssai, 0, sizeof(sess->s_nssai));
@@ -1801,4 +1890,151 @@ static void amf_namf_comm_decode_ue_session_context_list(
 
         ogs_sbi_header_free(&header);
     }
+}
+
+int amf_namf_comm_handle_registration_status_update_request(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg) {
+
+    ogs_sbi_response_t *response = NULL;
+    ogs_sbi_message_t sendmsg;
+    amf_ue_t *amf_ue = NULL;
+    ran_ue_t *ran_ue = NULL;
+    amf_sess_t *sess = NULL;
+
+    OpenAPI_ue_reg_status_update_req_data_t *UeRegStatusUpdateReqData = NULL;
+    OpenAPI_ue_reg_status_update_rsp_data_t UeRegStatusUpdateRspData;
+
+    int status = 0;
+    char *strerror = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    if (!recvmsg->h.resource.component[1]) {
+        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+        strerror = ogs_msprintf("No UE context ID");
+        goto cleanup;
+    }
+    amf_ue = amf_ue_find_by_ue_context_id(recvmsg->h.resource.component[1]);
+    if (!amf_ue) {
+        status = OGS_SBI_HTTP_STATUS_NOT_FOUND;
+        strerror = ogs_msprintf("Cannot find Context ID [%s]",
+                recvmsg->h.resource.component[1]);
+        goto cleanup;
+    }
+
+    UeRegStatusUpdateReqData = recvmsg->UeRegStatusUpdateReqData;
+    if (!UeRegStatusUpdateReqData) {
+        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+        strerror = ogs_msprintf("[%s] No UeRegStatusUpdateReqData",
+                amf_ue->supi ? amf_ue->supi : recvmsg->h.resource.component[1]);
+        goto cleanup;
+    }
+
+    if (amf_ue->amf_ue_context_transfer_state != UE_CONTEXT_TRANSFER_OLD_AMF_STATE) {
+        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+        strerror = ogs_msprintf("Incorrect UE context transfer state");
+        goto cleanup;
+    }
+
+    memset(&UeRegStatusUpdateRspData, 0, sizeof(UeRegStatusUpdateRspData));
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    sendmsg.UeRegStatusUpdateRspData = &UeRegStatusUpdateRspData;
+
+    if (UeRegStatusUpdateReqData->transfer_status ==
+            OpenAPI_ue_context_transfer_status_TRANSFERRED) {
+    /*
+    * TS 29.518
+    * 5.2.2.2.2 Registration Status Update
+    * Once the update is received, the source AMF shall:
+    *  -   remove the individual ueContext resource and release any PDU session(s) in the
+    *      toReleaseSessionList attribute, if the transferStatus attribute included in the
+    *      POST request body is set to "TRANSFERRED" and if the source AMF transferred the
+    *      complete UE Context including all MM contexts and PDU Session Contexts.
+    */
+        UeRegStatusUpdateRspData.reg_status_transfer_complete = 1;
+
+        ran_ue = ran_ue_find_by_id(amf_ue->ran_ue_id);
+
+        if (ran_ue) {
+            if (UeRegStatusUpdateReqData->to_release_session_list) {
+                OpenAPI_lnode_t *node = NULL;
+                OpenAPI_list_for_each(UeRegStatusUpdateReqData->to_release_session_list, node) {
+                    /* A double must be read */
+                    uint8_t psi = *(double *)node->data;
+                    sess = amf_sess_find_by_psi(amf_ue, psi);
+                    if (SESSION_CONTEXT_IN_SMF(sess)) {
+                        amf_nsmf_pdusession_sm_context_param_t param;
+
+                        memset(&param, 0, sizeof(param));
+                        param.ue_location = true;
+                        param.ue_timezone = true;
+
+                        amf_sbi_send_release_session(
+                                ran_ue, sess,
+                                AMF_RELEASE_SM_CONTEXT_NO_STATE, &param);
+                    } else {
+                        ogs_error("[%s] No Session Context PSI[%d]",
+                                amf_ue->supi, psi);
+                        UeRegStatusUpdateRspData.reg_status_transfer_complete = 0;
+                    }
+                }
+            }
+        }
+
+        /* Clear UE context */
+        CLEAR_NG_CONTEXT(amf_ue);
+        AMF_UE_CLEAR_PAGING_INFO(amf_ue);
+        AMF_UE_CLEAR_N2_TRANSFER(amf_ue, pdu_session_resource_setup_request);
+        AMF_UE_CLEAR_5GSM_MESSAGE(amf_ue);
+        CLEAR_AMF_UE_ALL_TIMERS(amf_ue);
+        OGS_ASN_CLEAR_DATA(&amf_ue->ueRadioCapability);
+
+    } else if (UeRegStatusUpdateReqData->transfer_status ==
+            OpenAPI_ue_context_transfer_status_NOT_TRANSFERRED) {
+    /*
+    * TS 23.502
+    * 4.2.2.2.2
+    * If the authentication/security procedure fails, then the Registration shall be rejected and
+    * the new AMF invokes the Namf_Communication_RegistrationStatusUpdate service operation with
+    * a reject indication towards the old AMF. The old AMF continues as if the UE context transfer
+    * service operation was never received.
+    */
+        UeRegStatusUpdateRspData.reg_status_transfer_complete = 0;
+
+    } else {
+        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+        strerror = ogs_msprintf("Transfer status not supported: [%d]",
+                UeRegStatusUpdateReqData->transfer_status);
+        goto cleanup;
+    }
+
+    status = OGS_SBI_HTTP_STATUS_OK;
+    response = ogs_sbi_build_response(&sendmsg, status);
+    ogs_assert(response);
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    amf_ue->amf_ue_context_transfer_state = UE_CONTEXT_INITIAL_STATE;
+
+    return OGS_OK;
+
+cleanup:
+    ogs_assert(strerror);
+    ogs_error("%s", strerror);
+
+    ogs_assert(true == ogs_sbi_server_send_error(stream, status, NULL, strerror, NULL, NULL));
+    ogs_free(strerror);
+
+    if (amf_ue)
+        amf_ue->amf_ue_context_transfer_state = UE_CONTEXT_INITIAL_STATE;
+
+    return OGS_ERROR;
+}
+
+int amf_namf_comm_handle_registration_status_update_response(
+        ogs_sbi_message_t *recvmsg, amf_ue_t *amf_ue) {
+
+    /* Nothing to do */
+
+    return OGS_OK;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2024 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2025 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -37,19 +37,20 @@ void pcf_am_state_final(ogs_fsm_t *s, pcf_event_t *e)
 void pcf_am_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 {
     bool handled;
-    pcf_ue_t *pcf_ue = NULL;
+    pcf_ue_am_t *pcf_ue_am = NULL;
 
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id;
     ogs_sbi_message_t *message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_assert(s);
     ogs_assert(e);
 
     pcf_sm_debug(e);
 
-    pcf_ue = pcf_ue_find_by_id(e->pcf_ue_id);
-    ogs_assert(pcf_ue);
+    pcf_ue_am = pcf_ue_am_find_by_id(e->pcf_ue_am_id);
+    ogs_assert(pcf_ue_am);
 
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
@@ -75,9 +76,9 @@ void pcf_am_state_operational(ogs_fsm_t *s, pcf_event_t *e)
         SWITCH(message->h.method)
         CASE(OGS_SBI_HTTP_METHOD_POST)
             handled = pcf_npcf_am_policy_control_handle_create(
-                    pcf_ue, stream, message);
+                    pcf_ue_am, stream, message);
             if (!handled) {
-                ogs_error("[%s] Cannot handle SBI message", pcf_ue->supi);
+                ogs_error("[%s] Cannot handle SBI message", pcf_ue_am->supi);
                 OGS_FSM_TRAN(s, pcf_am_state_exception);
             }
             break;
@@ -89,7 +90,7 @@ void pcf_am_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 
         DEFAULT
             ogs_error("[%s] Invalid HTTP method [%s]",
-                    pcf_ue->supi, message->h.method);
+                    pcf_ue_am->supi, message->h.method);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
                     OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, message,
@@ -111,8 +112,10 @@ void pcf_am_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NUDR_DR)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nudr_dr:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_POLICY_DATA)
                 SWITCH(message->h.resource.component[1])
@@ -122,63 +125,65 @@ void pcf_am_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         if (message->res_status ==
                                 OGS_SBI_HTTP_STATUS_NOT_FOUND) {
                             ogs_warn("[%s] Cannot find SUPI [%d]",
-                                pcf_ue->supi, message->res_status);
+                                pcf_ue_am->supi, message->res_status);
                         } else {
                             ogs_error("[%s] HTTP response error [%d]",
-                                pcf_ue->supi, message->res_status);
+                                pcf_ue_am->supi, message->res_status);
                         }
                         ogs_assert(true ==
                             ogs_sbi_server_send_error(
                                 stream, message->res_status,
-                                NULL, "HTTP response error", pcf_ue->supi,
+                                NULL, "HTTP response error", pcf_ue_am->supi,
                                 NULL));
                         break;
                     }
 
-                    pcf_nudr_dr_handle_query_am_data(pcf_ue, stream, message);
+                    pcf_nudr_dr_handle_query_am_data(
+                            pcf_ue_am, stream, message);
                     break;
 
                 DEFAULT
                     ogs_error("[%s] Invalid resource name [%s]",
-                            pcf_ue->supi, message->h.resource.component[1]);
+                            pcf_ue_am->supi, message->h.resource.component[1]);
                     ogs_assert_if_reached();
                 END
                 break;
 
             DEFAULT
                 ogs_error("[%s] Invalid resource name [%s]",
-                        pcf_ue->supi, message->h.resource.component[0]);
+                        pcf_ue_am->supi, message->h.resource.component[0]);
                 ogs_assert_if_reached();
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s] Invalid API name [%s]",
-                    pcf_ue->supi, message->h.service.name);
+                    pcf_ue_am->supi, message->h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
                     OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
                     "Invalid API name", message->h.resource.component[0],
                     NULL));
-        END
+        }
         break;
 
     default:
-        ogs_error("[%s] Unknown event %s", pcf_ue->supi, pcf_event_get_name(e));
+        ogs_error("[%s] Unknown event %s",
+                pcf_ue_am->supi, pcf_event_get_name(e));
         break;
     }
 }
 
 void pcf_am_state_deleted(ogs_fsm_t *s, pcf_event_t *e)
 {
-    pcf_ue_t *pcf_ue = NULL;
+    pcf_ue_am_t *pcf_ue_am = NULL;
     ogs_assert(s);
     ogs_assert(e);
 
     pcf_sm_debug(e);
 
-    pcf_ue = pcf_ue_find_by_id(e->pcf_ue_id);
-    ogs_assert(pcf_ue);
+    pcf_ue_am = pcf_ue_am_find_by_id(e->pcf_ue_am_id);
+    ogs_assert(pcf_ue_am);
 
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
@@ -188,21 +193,22 @@ void pcf_am_state_deleted(ogs_fsm_t *s, pcf_event_t *e)
         break;
 
     default:
-        ogs_error("[%s] Unknown event %s", pcf_ue->supi, pcf_event_get_name(e));
+        ogs_error("[%s] Unknown event %s", pcf_ue_am->supi,
+                pcf_event_get_name(e));
         break;
     }
 }
 
 void pcf_am_state_exception(ogs_fsm_t *s, pcf_event_t *e)
 {
-    pcf_ue_t *pcf_ue = NULL;
+    pcf_ue_am_t *pcf_ue_am = NULL;
     ogs_assert(s);
     ogs_assert(e);
 
     pcf_sm_debug(e);
 
-    pcf_ue = pcf_ue_find_by_id(e->pcf_ue_id);
-    ogs_assert(pcf_ue);
+    pcf_ue_am = pcf_ue_am_find_by_id(e->pcf_ue_am_id);
+    ogs_assert(pcf_ue_am);
 
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
@@ -212,7 +218,8 @@ void pcf_am_state_exception(ogs_fsm_t *s, pcf_event_t *e)
         break;
 
     default:
-        ogs_error("[%s] Unknown event %s", pcf_ue->supi, pcf_event_get_name(e));
+        ogs_error("[%s] Unknown event %s", pcf_ue_am->supi,
+                pcf_event_get_name(e));
         break;
     }
 }

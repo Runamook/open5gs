@@ -23,6 +23,7 @@
 #include "ngap-handler.h"
 #include "nnrf-handler.h"
 #include "namf-handler.h"
+#include "namf-oam.h"
 #include "nsmf-handler.h"
 #include "nnssf-handler.h"
 #include "nas-security.h"
@@ -63,20 +64,22 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
     amf_ue_t *amf_ue = NULL;
     amf_sess_t *sess = NULL;
 
-    ogs_sbi_object_t *sbi_object = NULL;
     ogs_pool_id_t sbi_object_id = OGS_INVALID_POOL_ID;
     ogs_sbi_xact_t *sbi_xact = NULL;
     ogs_pool_id_t sbi_xact_id = OGS_INVALID_POOL_ID;
     int state = AMF_CREATE_SM_CONTEXT_NO_STATE;
+    ogs_pool_id_t ran_ue_id = OGS_INVALID_POOL_ID;
+    ogs_pool_id_t target_ue_id = OGS_INVALID_POOL_ID;
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_request_t *sbi_request = NULL;
-    ogs_sbi_service_type_e service_type = OGS_SBI_SERVICE_TYPE_NULL;
 
     ogs_sbi_nf_instance_t *nf_instance = NULL;
     ogs_sbi_subscription_data_t *subscription_data = NULL;
     ogs_sbi_response_t *sbi_response = NULL;
     ogs_sbi_message_t sbi_message;
+
+    int service_name_id = OpenAPI_service_name_NULL;
 
     amf_sm_debug(e);
 
@@ -103,6 +106,28 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
         }
 
+        /*
+         * Special handling for NAMF_OAM custom API
+         */
+        if (sbi_request->h.uri &&
+            strstr(sbi_request->h.uri, OGS_SBI_SERVICE_NAME_NAMF_OAM) != NULL) {
+            rv = ogs_sbi_parse_header(&sbi_message, &sbi_request->h);
+            if (rv != OGS_OK) {
+                ogs_error("cannot parse HTTP header");
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(
+                        stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        NULL, "cannot parse HTTP header", NULL, NULL));
+                break;
+            } else {
+                amf_namf_oam_handler(stream, &sbi_message, sbi_request);
+                break;
+            }
+        }
+
+        /*
+         * For standard APIs: parse the complete request (header + body)
+         */
         rv = ogs_sbi_parse_request(&sbi_message, sbi_request);
         if (rv != OGS_OK) {
             /* 'sbi_message' buffer is released in ogs_sbi_parse_request() */
@@ -114,13 +139,15 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message.h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_SDM)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message.h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nudm_sdm:
             api_version = OGS_SBI_API_V2;
             break;
-        DEFAULT
+        default:
             api_version = OGS_SBI_API_V1;
-        END
+        }
 
         ogs_assert(api_version);
         if (strcmp(sbi_message.h.api.version, api_version) != 0) {
@@ -133,8 +160,8 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message.h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NNRF_NFM)
+        switch (service_name_id) {
+        case OpenAPI_service_name_nnrf_nfm:
 
             SWITCH(sbi_message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_NF_STATUS_NOTIFY)
@@ -163,7 +190,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_COMM)
+        case OpenAPI_service_name_namf_comm:
             SWITCH(sbi_message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_UE_CONTEXTS)
                 SWITCH(sbi_message.h.resource.component[2])
@@ -209,6 +236,23 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                     END
                     break;
 
+                CASE(OGS_SBI_RESOURCE_NAME_TRANSFER_UPDATE)
+                    SWITCH(sbi_message.h.method)
+                    CASE(OGS_SBI_HTTP_METHOD_POST)
+                        amf_namf_comm_handle_registration_status_update_request(
+                                stream, &sbi_message);
+                        break;
+                    DEFAULT
+                        ogs_error("Invalid HTTP method [%s]",
+                                sbi_message.h.method);
+                        ogs_assert(true ==
+                            ogs_sbi_server_send_error(stream,
+                                OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                                "Invalid HTTP method", sbi_message.h.method,
+                                NULL));
+                    END
+                    break;
+
                 DEFAULT
                     ogs_error("Invalid resource name [%s]",
                             sbi_message.h.resource.component[2]);
@@ -231,7 +275,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_CALLBACK)
+        case OGS_SBI_SERVICE_NAME_ID_NAMF_CALLBACK:
             SWITCH(sbi_message.h.resource.component[1])
             CASE(OGS_SBI_RESOURCE_NAME_SM_CONTEXT_STATUS)
                 amf_namf_callback_handle_sm_context_status(
@@ -262,14 +306,14 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid API name [%s]", sbi_message.h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
                     OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
                     "Invalid API name", sbi_message.h.resource.component[0],
                     NULL));
-        END
+        }
 
         /* In lib/sbi/server.c, notify_completed() releases 'request' buffer. */
         ogs_sbi_message_free(&sbi_message);
@@ -288,14 +332,16 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message.h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_SDM)
-        CASE(OGS_SBI_SERVICE_NAME_NNSSF_NSSELECTION)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message.h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nudm_sdm:
+        case OpenAPI_service_name_nnssf_nsselection:
             api_version = OGS_SBI_API_V2;
             break;
-        DEFAULT
+        default:
             api_version = OGS_SBI_API_V1;
-        END
+        }
 
         ogs_assert(api_version);
         if (strcmp(sbi_message.h.api.version, api_version) != 0) {
@@ -305,17 +351,40 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message.h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NNRF_NFM)
+        switch (service_name_id) {
+        case OpenAPI_service_name_nnrf_nfm:
 
             SWITCH(sbi_message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_NF_INSTANCES)
                 nf_instance = e->h.sbi.data;
                 ogs_assert(nf_instance);
-                ogs_assert(OGS_FSM_STATE(&nf_instance->sm));
 
-                e->h.sbi.message = &sbi_message;
-                ogs_fsm_dispatch(&nf_instance->sm, e);
+    /*
+     * Guard against dispatching to an FSM that may have been finalized
+     * by an asynchronous shutdown triggered by SIGTERM.
+     *
+     * In init.c’s event_termination(), which can be invoked asynchronously
+     * when the process receives SIGTERM, we iterate over all NF instances:
+     *     ogs_list_for_each(&ogs_sbi_self()->nf_instance_list, nf_instance)
+     *         ogs_sbi_nf_fsm_fini(nf_instance);
+     * and call ogs_fsm_fini() on each instance’s FSM. That finalizes the FSM
+     * and its state is reset to zero.
+     *
+     * After event_termination(), any incoming SBI response—such as an NRF
+     * client callback arriving after deregistration—would otherwise be
+     * dispatched into a dead FSM and trigger an assertion failure.
+     *
+     * To avoid this, we check OGS_FSM_STATE(&nf_instance->sm):
+     *   - If non-zero, the FSM is still active and can safely handle the event.
+     *   - If zero, the FSM has already been finalized by event_termination(),
+     *     so we log and drop the event to allow graceful shutdown.
+     */
+                if (OGS_FSM_STATE(&nf_instance->sm)) {
+                    e->h.sbi.message = &sbi_message;
+                    ogs_fsm_dispatch(&nf_instance->sm, e);
+                } else
+                    ogs_error("NF instance FSM has been finalized");
+
                 break;
 
             CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS)
@@ -350,14 +419,17 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
 
                 CASE(OGS_SBI_HTTP_METHOD_DELETE)
                     if (sbi_message.res_status ==
-                            OGS_SBI_HTTP_STATUS_NO_CONTENT) {
-                        ogs_sbi_subscription_data_remove(subscription_data);
-                    } else {
+                            OGS_SBI_HTTP_STATUS_NO_CONTENT)
+                        ogs_info("[%s] Subscription deleted",
+                                subscription_data->id ?
+                                    subscription_data->id : "Unknown");
+                    else
                         ogs_error("[%s] HTTP response error [%d]",
                                 subscription_data->id ?
                                     subscription_data->id : "Unknown",
                                 sbi_message.res_status);
-                    }
+
+                    ogs_sbi_subscription_data_remove(subscription_data);
                     break;
 
                 DEFAULT
@@ -373,7 +445,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NNRF_DISC)
+        case OpenAPI_service_name_nnrf_disc:
             SWITCH(sbi_message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_NF_INSTANCES)
                 sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
@@ -393,9 +465,11 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                 CASE(OGS_SBI_HTTP_METHOD_GET)
                     if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_OK)
                         amf_nnrf_handle_nf_discover(sbi_xact, &sbi_message);
-                    else
+                    else {
                         ogs_error("HTTP response error [%d]",
                                 sbi_message.res_status);
+                        amf_nnrf_handle_failed_amf_discovery(sbi_xact);
+                    }
                     break;
 
                 DEFAULT
@@ -411,11 +485,11 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NAUSF_AUTH)
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_UECM)
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_SDM)
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_AM_POLICY_CONTROL)
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_COMM)
+        case OpenAPI_service_name_nausf_auth:
+        case OpenAPI_service_name_nudm_uecm:
+        case OpenAPI_service_name_nudm_sdm:
+        case OpenAPI_service_name_npcf_am_policy_control:
+        case OpenAPI_service_name_namf_comm:
             sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
                     sbi_xact_id <= OGS_MAX_POOL_ID);
@@ -452,7 +526,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             ogs_fsm_dispatch(&amf_ue->sm, e);
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        case OpenAPI_service_name_nsmf_pdusession:
             sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
                     sbi_xact_id <= OGS_MAX_POOL_ID);
@@ -471,6 +545,15 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             sbi_object_id = sbi_xact->sbi_object_id;
             ogs_assert(sbi_object_id >= OGS_MIN_POOL_ID &&
                     sbi_object_id <= OGS_MAX_POOL_ID);
+
+            if (sbi_xact->user_data) {
+                amf_sbi_xact_ctx_t *ctx = sbi_xact->user_data;
+
+                if (ctx->ran_ue_id != OGS_INVALID_POOL_ID)
+                    ran_ue_id = ctx->ran_ue_id;
+                if (ctx->target_ue_id != OGS_INVALID_POOL_ID)
+                    target_ue_id = ctx->target_ue_id;
+            }
 
             ogs_sbi_xact_remove(sbi_xact);
 
@@ -520,14 +603,14 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
 
             ogs_assert(OGS_FSM_STATE(&amf_ue->sm));
 
-            e->amf_ue_id = amf_ue->id;
-            e->sess_id = sess->id;
-            e->h.sbi.message = &sbi_message;;
+            if (ran_ue_id >= OGS_MIN_POOL_ID && ran_ue_id <= OGS_MAX_POOL_ID)
+                ran_ue = ran_ue_find_by_id(ran_ue_id);
 
             SWITCH(sbi_message.h.resource.component[2])
             CASE(OGS_SBI_RESOURCE_NAME_MODIFY)
                 amf_nsmf_pdusession_handle_update_sm_context(
-                        sess, state, &sbi_message);
+                        amf_ue, ran_ue, sess, state, target_ue_id,
+                        &sbi_message);
                 break;
 
             CASE(OGS_SBI_RESOURCE_NAME_RELEASE)
@@ -539,12 +622,13 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                     ogs_error("[%s:%d] HTTP response error [%d]",
                             amf_ue->supi, sess->psi, sbi_message.res_status);
                 }
-                amf_nsmf_pdusession_handle_release_sm_context(sess, state);
+                amf_nsmf_pdusession_handle_release_sm_context(
+                        amf_ue, ran_ue, sess, state);
                 break;
 
             DEFAULT
                 rv = amf_nsmf_pdusession_handle_create_sm_context(
-                        sess, &sbi_message);
+                        amf_ue, ran_ue, sess, &sbi_message);
                 if (rv != OGS_OK) {
                     /*
                      * 1. First PDU session establishment request
@@ -572,7 +656,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NNSSF_NSSELECTION)
+        case OpenAPI_service_name_nnssf_nsselection:
             sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
                     sbi_xact_id <= OGS_MAX_POOL_ID);
@@ -589,6 +673,13 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             sbi_object_id = sbi_xact->sbi_object_id;
             ogs_assert(sbi_object_id >= OGS_MIN_POOL_ID &&
                     sbi_object_id <= OGS_MAX_POOL_ID);
+
+            if (sbi_xact->user_data) {
+                amf_sbi_xact_ctx_t *ctx = sbi_xact->user_data;
+
+                if (ctx->ran_ue_id != OGS_INVALID_POOL_ID)
+                    ran_ue_id = ctx->ran_ue_id;
+            }
 
             state = sbi_xact->state;
 
@@ -608,18 +699,17 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
 
             ogs_assert(OGS_FSM_STATE(&amf_ue->sm));
 
-            e->amf_ue_id = amf_ue->id;
-            e->sess_id = sess->id;
-            e->h.sbi.message = &sbi_message;;
-            e->h.sbi.state = state;
+            if (ran_ue_id >= OGS_MIN_POOL_ID && ran_ue_id <= OGS_MAX_POOL_ID)
+                ran_ue = ran_ue_find_by_id(ran_ue_id);
 
-            amf_nnssf_nsselection_handle_get(sess, &sbi_message);
+            amf_nnssf_nsselection_handle_get(
+                    amf_ue, ran_ue, sess, state, &sbi_message);
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid service name [%s]", sbi_message.h.service.name);
             ogs_assert_if_reached();
-        END
+        }
 
         ogs_sbi_message_free(&sbi_message);
         ogs_sbi_response_free(sbi_response);
@@ -650,24 +740,26 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             subscription_data = e->h.sbi.data;
             ogs_assert(subscription_data);
 
-            ogs_assert(true ==
-                ogs_nnrf_nfm_send_nf_status_subscribe(
-                    ogs_sbi_self()->nf_instance->nf_type,
-                    subscription_data->req_nf_instance_id,
-                    subscription_data->subscr_cond.nf_type,
-                    subscription_data->subscr_cond.service_name));
-
             ogs_error("[%s] Subscription validity expired",
-                subscription_data->id);
-            ogs_sbi_subscription_data_remove(subscription_data);
+                    subscription_data->id ?
+                        subscription_data->id : "Unknown");
+
+            /*
+             * Helper strdup-s the fields we need, removes the old
+             * subscription so the pool slot is freed, then resubscribes.
+             */
+            (void)ogs_nnrf_nfm_send_nf_status_subscribe_renew(
+                    subscription_data);
             break;
 
         case OGS_TIMER_SUBSCRIPTION_PATCH:
             subscription_data = e->h.sbi.data;
             ogs_assert(subscription_data);
 
-            ogs_assert(true ==
-                ogs_nnrf_nfm_send_nf_status_update(subscription_data));
+            if (ogs_nnrf_nfm_send_nf_status_update(subscription_data) != true)
+                ogs_error("[%s] NF status subscription update failed",
+                        subscription_data->id ?
+                            subscription_data->id : "Unknown");
 
             ogs_info("[%s] Need to update Subscription",
                     subscription_data->id);
@@ -712,73 +804,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                 break;
             }
 
-            sbi_object = sbi_xact->sbi_object;
-            ogs_assert(sbi_object);
-
-            sbi_object_id = sbi_xact->sbi_object_id;
-            ogs_assert(sbi_object_id >= OGS_MIN_POOL_ID &&
-                    sbi_object_id <= OGS_MAX_POOL_ID);
-
-            service_type = sbi_xact->service_type;
-
-            ogs_sbi_xact_remove(sbi_xact);
-
-            ogs_assert(sbi_object->type > OGS_SBI_OBJ_BASE &&
-                        sbi_object->type < OGS_SBI_OBJ_TOP);
-
-            switch(sbi_object->type) {
-            case OGS_SBI_OBJ_UE_TYPE:
-                amf_ue = amf_ue_find_by_id(sbi_object_id);
-                if (!amf_ue) {
-                    ogs_error("UE(amf_ue) Context has already been removed");
-                    break;
-                }
-
-                ogs_error("[%s] Cannot receive SBI message", amf_ue->suci);
-                r = nas_5gs_send_gmm_reject_from_sbi(amf_ue,
-                        OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT);
-                ogs_expect(r == OGS_OK);
-                ogs_assert(r != OGS_ERROR);
-                break;
-
-            case OGS_SBI_OBJ_SESS_TYPE:
-                sess = amf_sess_find_by_id(sbi_object_id);
-                if (!sess) {
-                    ogs_error("Session has already been removed");
-                    break;
-                }
-
-                amf_ue = amf_ue_find_by_id(sess->amf_ue_id);
-                if (!amf_ue) {
-                    ogs_error("UE(amf_ue) Context has already been removed");
-                    break;
-                }
-
-                ogs_error("[%d:%d] Cannot receive SBI message",
-                        sess->psi, sess->pti);
-                if (sess->payload_container_type) {
-                    r = nas_5gs_send_back_gsm_message(
-                            ran_ue_find_by_id(sess->ran_ue_id), sess,
-                            OGS_5GMM_CAUSE_PAYLOAD_WAS_NOT_FORWARDED,
-                            AMF_NAS_BACKOFF_TIME);
-                    ogs_expect(r == OGS_OK);
-                    ogs_assert(r != OGS_ERROR);
-                } else {
-                    r = ngap_send_error_indication2(
-                            ran_ue_find_by_id(sess->ran_ue_id),
-                            NGAP_Cause_PR_transport,
-                            NGAP_CauseTransport_transport_resource_unavailable);
-                    ogs_expect(r == OGS_OK);
-                    ogs_assert(r != OGS_ERROR);
-                }
-                break;
-
-            default:
-                ogs_fatal("Not implemented [%s:%d]",
-                    ogs_sbi_service_type_to_name(service_type),
-                    sbi_object->type);
-                ogs_assert_if_reached();
-            }
+            amf_nnrf_handle_failed_amf_discovery(sbi_xact);
             break;
 
         default:
@@ -828,6 +854,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             if (!gnb) {
                 ogs_error("amf_gnb_add() failed");
                 ogs_free(addr);
+                break;
             }
         } else {
             ogs_free(addr);

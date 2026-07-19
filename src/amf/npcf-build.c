@@ -38,12 +38,12 @@ ogs_sbi_request_t *amf_npcf_am_policy_control_build_create(
 
     ogs_assert(amf_ue);
     ogs_assert(amf_ue->supi);
-    ogs_assert(ran_ue_find_by_id(amf_ue->ran_ue_id));
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
     message.h.service.name =
-        (char *)OGS_SBI_SERVICE_NAME_NPCF_AM_POLICY_CONTROL;
+        OpenAPI_service_name_ToString(
+                OpenAPI_service_name_npcf_am_policy_control);
     message.h.api.version = (char *)OGS_SBI_API_V1;
     message.h.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_POLICIES;
 
@@ -92,12 +92,9 @@ ogs_sbi_request_t *amf_npcf_am_policy_control_build_create(
         ogs_error("No ueLocation.nr_location");
         goto end;
     }
-    ueLocation.nr_location->ue_location_timestamp =
-        ogs_sbi_gmtime_string(amf_ue->ue_location_timestamp);
-    if (!ueLocation.nr_location->ue_location_timestamp) {
-        ogs_error("No ueLocation.nr_location->ue_location_timestamp");
-        goto end;
-    }
+    if (amf_ue->ue_location_timestamp)
+        ueLocation.nr_location->ue_location_timestamp =
+            ogs_sbi_gmtime_string(amf_ue->ue_location_timestamp);
     PolicyAssociationRequest.user_loc = &ueLocation;
 
     PolicyAssociationRequest.time_zone =
@@ -160,7 +157,8 @@ ogs_sbi_request_t *amf_npcf_am_policy_control_build_create(
     }
 
     PolicyAssociationRequest.service_name =
-        (char *)OGS_SBI_SERVICE_NAME_NAMF_CALLBACK;
+        OpenAPI_service_name_FromString(
+                (char *)OGS_SBI_SERVICE_NAME_NAMF_CALLBACK);
 
     PolicyAssociationRequest.supp_feat =
         ogs_uint64_to_string(amf_ue->am_policy_control_features);

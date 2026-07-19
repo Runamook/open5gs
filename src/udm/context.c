@@ -100,6 +100,7 @@ int udm_context_parse_config(void)
     int rv;
     yaml_document_t *document = NULL;
     ogs_yaml_iter_t root_iter;
+    int idx = 0;
 
     document = ogs_app()->document;
     ogs_assert(document);
@@ -111,7 +112,8 @@ int udm_context_parse_config(void)
     while (ogs_yaml_iter_next(&root_iter)) {
         const char *root_key = ogs_yaml_iter_key(&root_iter);
         ogs_assert(root_key);
-        if (!strcmp(root_key, "udm")) {
+        if ((!strcmp(root_key, "udm")) &&
+            (idx++ == ogs_app()->config_section_id)) {
             ogs_yaml_iter_t udm_iter;
             ogs_yaml_iter_recurse(&root_iter, &udm_iter);
             while (ogs_yaml_iter_next(&udm_iter)) {
@@ -223,11 +225,13 @@ void udm_ue_remove(udm_ue_t *udm_ue)
     ogs_free(udm_ue->ctx_id);
 
     ogs_assert(udm_ue->suci);
-    ogs_hash_set(self.suci_hash, udm_ue->suci, strlen(udm_ue->suci), NULL);
+    ogs_hash_unset_if_owner(self.suci_hash,
+            udm_ue->suci, strlen(udm_ue->suci), udm_ue);
     ogs_free(udm_ue->suci);
 
     ogs_assert(udm_ue->supi);
-    ogs_hash_set(self.supi_hash, udm_ue->supi, strlen(udm_ue->supi), NULL);
+    ogs_hash_unset_if_owner(self.supi_hash,
+            udm_ue->supi, strlen(udm_ue->supi), udm_ue);
     ogs_free(udm_ue->supi);
 
     if (udm_ue->serving_network_name)
@@ -260,15 +264,6 @@ udm_ue_t *udm_ue_find_by_supi(char *supi)
 {
     ogs_assert(supi);
     return (udm_ue_t *)ogs_hash_get(self.supi_hash, supi, strlen(supi));
-}
-
-udm_ue_t *udm_ue_find_by_suci_or_supi(char *suci_or_supi)
-{
-    ogs_assert(suci_or_supi);
-    if (strncmp(suci_or_supi, "suci-", strlen("suci-")) == 0)
-        return udm_ue_find_by_suci(suci_or_supi);
-    else
-        return udm_ue_find_by_supi(suci_or_supi);
 }
 
 udm_ue_t *udm_ue_find_by_ctx_id(char *ctx_id)

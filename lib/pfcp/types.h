@@ -441,8 +441,6 @@ ED7(uint8_t spare:2;,
 #define OGS_PFCP_APPLY_ACTION_MBSU                          (1<<4)
 typedef uint16_t  ogs_pfcp_apply_action_t;
 
-
-
 /* 8.2.58 CP Function Features */
 typedef struct ogs_pfcp_cp_function_features_s {
     union {
@@ -552,9 +550,17 @@ typedef struct ogs_pfcp_outer_header_removal_s {
     uint8_t gtpu_extheader_deletion;
 } ogs_pfcp_outer_header_removal_t;
 
+/******************************************************************************
+ * PFCP Node ID structure
+ ******************************************************************************/
 #define OGS_PFCP_NODE_ID_IPV4   0
 #define OGS_PFCP_NODE_ID_IPV6   1
 #define OGS_PFCP_NODE_ID_FQDN   2
+
+/******************************************************************************
+ * Add this line to define the UNKNOWN type. We use '3' since 0,1,2 are taken.
+ ******************************************************************************/
+#define OGS_PFCP_NODE_ID_UNKNOWN 0xf
 typedef struct ogs_pfcp_node_id_s {
 ED2(uint8_t     spare:4;,
     uint8_t     type:4;)
@@ -778,62 +784,6 @@ ED4(uint8_t     spare:5;,
         } both;
     };
 } __attribute__ ((packed)) ogs_pfcp_outer_header_creation_t;
-
-/*
- * 8.2.82 User Plane IP Resource Information
- *
- * The following flags are coded within Octet 5:
- * - Bit 1 – V4: If this bit is set to "1", then the IPv4 address field
- *   shall be present, otherwise the IPv4 address field shall not be present.
- * - Bit 2 – V6: If this bit is set to "1", then the IPv6 address field
- *   shall be present, otherwise the IPv6 address field shall not be present.
- * - Bit 3-5 – TEID Range Indication (TEIDRI): the value of this field
- *   indicates the number of bits in the most significant octet of a TEID
- *   that are used to partition the TEID range,
- *   e.g. if this field is set to "4", then the first 4 bits in the TEID
- *   are used to partition the TEID range.
- * - Bit 6 – Associated Network Instance (ASSONI): if this bit is set to "1",
- *   then the Network Instance field shall be present, otherwise the Network
- *   Instance field shall not be present.
- * - Bit 7 – Associated Source Interface (ASSOSI): if this bit is set to "1",
- *   then the Source Interface field shall be present,
- *   otherwise the Source Interface field shall not be present.
- * - Bit 8: Spare, for future use and set to 0.
- *
- * At least one of the V4 and V6 flags shall be set to "1",
- * and both may be set to "1".
- *
- * If both the ASSONI and ASSOSI flags are set to "0", this shall indicate
- * that the User Plane IP Resource Information provided can be used
- * by CP function for any Network Instance and any Source Interface
- * of GTP-U user plane in the UP function.  Octet 6 (TEID Range) shall be
- * present if the TEID Range Indication is not set to zero and
- * shall contain a value of the bits which are used to partition the TEID range.
- * E.g. if the TEID Range Indication is set to "4", then Octet 6 shall be
- * one of values between 0 and 15. When TEID Range Indication is set to zero,
- * the Octet 6 shall not be present, the TEID is not partitioned,
- * i.e. all TEID values are available for use by the CP function.
- *
- * Octets "m to (m+3)" and/or "p to (p+15)" (IPv4 address / IPv6 address fields)
- * , if present, shall contain the respective IP address values.
- *
- * Octets "k to l", if present, shall contain a Network Instance value
- * as encoded in octet "5 to n+4" of the Figure 8.2.4-1 in clause 8.2.4,
- * identifying a Network Instance with which the IP address or TEID Range
- * is associated.
- *
- * Octet r, if present, shall contain a Source Interface value as encoded
- * in octet 5 of the Figure 8.2.2-1 in clause 8.2.2,
- * identifying the Source Interface with which the IP address or TEID Range
- * is associated.
- */
-int16_t ogs_pfcp_build_user_plane_ip_resource_info(
-        ogs_tlv_octet_t *octet,
-        ogs_user_plane_ip_resource_info_t *info,
-        void *data, int data_len);
-int16_t ogs_pfcp_parse_user_plane_ip_resource_info(
-        ogs_user_plane_ip_resource_info_t *info,
-        ogs_tlv_octet_t *octet);
 
 /*
  * 8.2.5 SDF Filter
@@ -1650,6 +1600,54 @@ ED8(uint8_t spare:1;,
 int16_t ogs_pfcp_build_user_id(
         ogs_tlv_octet_t *octet, ogs_pfcp_user_id_t *user_id,
         void *data, int data_len);
+
+/*
+ * 8.2.118 3GPP Interface Type
+ *
+ * NOTE 1: If separation of roaming and non-roaming traffic is desired
+ * this value should only be used for the S5-U interface
+ * and "S8-U" (decimal 19) should be used for the S8-U interface.
+ * NOTE 2: If separation of roaming and non-roaming traffic is desired
+ * this value should only be used for the Gn-U interface
+ * and "Gp-U" (decimal 20) should be used for the Gp-U interface.
+ * NOTE 3: If separation of roaming and non-roaming traffic is desired,
+ * this value should only be used for N9 non-roaming interfaces
+ * and (decimal value "21") should be used for N9 roaming interfaces.
+ */
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S1_U       0
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S5_S8_U    1  /* NOTE 1 */
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S4_U       2
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S11_U      3
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S12        4
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_GN_GP_U    5  /* NOTE 2 */
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S2A_U      6
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S2B_U      7
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_ENB_GTP_U_FOR_DL_DATA_FORWARDING 8
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_ENB_GTP_U_FOR_UL_DATA_FORWARDING 9
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_SGW_UPF_GTP_U_FOR_DL_DATA_FORWARDING 10
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N3_3GPP_ACCESS 11
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N3_TRUSTED_NON_3GPP_ACCESS 12
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N3_UNTRUSTED_NON_3GPP_ACCESS 13
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N3_FOR_DATA_FORWARDING 14
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N9         15 /* NOTE 3 */
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_SGI        16
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N6         17
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N19        18
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_S8_U       19
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_GP_U       20
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N9_FOR_ROAMING 21
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_IU_U       22
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N9_FOR_DATA_FORWARDING 23
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_SXA_U      24
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_SXB_U      25
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_SXC_U      26
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N4_U       27
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_SGW_UPF_GTP_U_FOR_UL_DATA_FORWARDING 28
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N6MB_NMB9  29
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N3MB       30
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_N19MB      31
+#define OGS_PFCP_3GPP_INTERFACE_TYPE_UNKNOWN    0xff
+typedef uint8_t ogs_pfcp_3gpp_interface_type_t;
 
 /*
  * 8.2.136 PFCPSEReq-Flags

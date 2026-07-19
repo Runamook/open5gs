@@ -18,6 +18,7 @@
  */
 
 #include "nudr-handler.h"
+#include "sbi-path.h"
 
 bool udm_nudr_dr_handle_subscription_authentication(
     udm_ue_t *udm_ue, ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
@@ -89,7 +90,8 @@ bool udm_nudr_dr_handle_subscription_authentication(
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(
                         stream, recvmsg->res_status, recvmsg, strerror, NULL,
-                        recvmsg->ProblemDetails->cause));
+                        (recvmsg->ProblemDetails) ?
+                                recvmsg->ProblemDetails->cause : NULL));
                 ogs_free(strerror);
                 return false;
             }
@@ -194,7 +196,8 @@ bool udm_nudr_dr_handle_subscription_authentication(
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(
                         stream, recvmsg->res_status, recvmsg, strerror, NULL,
-                        recvmsg->ProblemDetails->cause));
+                        (recvmsg->ProblemDetails) ?
+                                recvmsg->ProblemDetails->cause : NULL));
                 ogs_free(strerror);
                 return false;
             }
@@ -203,6 +206,8 @@ bool udm_nudr_dr_handle_subscription_authentication(
                     0, sizeof(AuthenticationInfoResult));
 
             AuthenticationInfoResult.supi = udm_ue->supi;
+            if (!udm_ue->auth_type)
+                udm_ue->auth_type = OpenAPI_auth_type_5G_AKA;
             AuthenticationInfoResult.auth_type = udm_ue->auth_type;
 
             ogs_random(udm_ue->rand, OGS_RAND_LEN);
@@ -283,7 +288,8 @@ bool udm_nudr_dr_handle_subscription_authentication(
             ogs_assert(true ==
                 ogs_sbi_server_send_error(
                     stream, recvmsg->res_status, recvmsg, strerror, NULL,
-                    recvmsg->ProblemDetails->cause));
+                    (recvmsg->ProblemDetails) ?
+                            recvmsg->ProblemDetails->cause : NULL));
             ogs_free(strerror);
             return false;
         }
@@ -352,7 +358,8 @@ bool udm_nudr_dr_handle_subscription_authentication(
                     OGS_SBI_HTTP_STATUS_NO_CONTENT);
         } else {
             memset(&header, 0, sizeof(header));
-            header.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_UEAU;
+            header.service.name =
+                OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_ueau);
             header.api.version = (char *)OGS_SBI_API_V1;
             header.resource.component[0] = udm_ue->supi;
             header.resource.component[1] =
@@ -415,7 +422,8 @@ bool udm_nudr_dr_handle_subscription_context(
         ogs_assert(true ==
             ogs_sbi_server_send_error(stream, recvmsg->res_status,
                 NULL, "HTTP response error", udm_ue->supi,
-                recvmsg->ProblemDetails->cause));
+                (recvmsg->ProblemDetails) ?
+                        recvmsg->ProblemDetails->cause : NULL));
         return false;
     }
 
@@ -540,7 +548,8 @@ bool udm_nudr_dr_handle_subscription_context(
         memset(&sendmsg, 0, sizeof(sendmsg));
 
         memset(&header, 0, sizeof(header));
-        header.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_UECM;
+        header.service.name =
+            OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_uecm);
         header.api.version = (char *)OGS_SBI_API_V1;
         header.resource.component[0] = udm_ue->supi;
         header.resource.component[1] =
@@ -601,7 +610,8 @@ bool udm_nudr_dr_handle_subscription_context(
 }
 
 bool udm_nudr_dr_handle_subscription_provisioned(
-    udm_ue_t *udm_ue, ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+    udm_ue_t *udm_ue, ogs_sbi_stream_t *stream, int state,
+    ogs_sbi_message_t *recvmsg)
 {
     char *strerror = NULL;
     ogs_sbi_server_t *server = NULL;
@@ -615,6 +625,37 @@ bool udm_nudr_dr_handle_subscription_provisioned(
     ogs_assert(server);
 
     ogs_assert(recvmsg);
+
+    if (state == UDM_SBI_UE_PROVISIONED_DATASETS) {
+        OpenAPI_provisioned_data_sets_t *ProvisionedDataSets;
+
+        ProvisionedDataSets = recvmsg->ProvisionedDataSets;
+        if (!ProvisionedDataSets) {
+            ogs_error("[%s] No ProvisionedDataSets",
+                    udm_ue->supi);
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(
+                    stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    recvmsg, "No ProvisionedDataSets",
+                    udm_ue->supi, NULL));
+            return false;
+        }
+
+        memset(&sendmsg, 0, sizeof(sendmsg));
+
+        sendmsg.ProvisionedDataSets =
+            OpenAPI_provisioned_data_sets_copy(
+                sendmsg.ProvisionedDataSets,
+                    recvmsg->ProvisionedDataSets);
+
+        response = ogs_sbi_build_response(&sendmsg, recvmsg->res_status);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+        OpenAPI_provisioned_data_sets_free(sendmsg.ProvisionedDataSets);
+
+        return true;
+    }
 
     SWITCH(recvmsg->h.resource.component[4])
     CASE(OGS_SBI_RESOURCE_NAME_AM_DATA)
@@ -635,6 +676,29 @@ bool udm_nudr_dr_handle_subscription_provisioned(
         }
 
         memset(&sendmsg, 0, sizeof(sendmsg));
+
+        /* Check if original request was for /nudm-sdm/v2/{supi}/nssai */
+        if (state == UDM_SBI_UE_PROVISIONED_NSSAI_ONLY) {
+            OpenAPI_nssai_t *Nssai = NULL;
+            Nssai = AccessAndMobilitySubscriptionData->nssai;
+            if (!Nssai) {
+                ogs_error("[%s] No Nssai", udm_ue->supi);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(
+                        stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        recvmsg, "No Nssai",
+                        udm_ue->supi, NULL));
+                return false;
+            }
+
+            sendmsg.Nssai = OpenAPI_nssai_copy(sendmsg.Nssai, Nssai);
+            response = ogs_sbi_build_response(&sendmsg, recvmsg->res_status);
+            ogs_assert(response);
+            ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+            OpenAPI_nssai_free(sendmsg.Nssai);
+
+            break;
+        }
 
         sendmsg.AccessAndMobilitySubscriptionData =
             OpenAPI_access_and_mobility_subscription_data_copy(
@@ -768,7 +832,8 @@ bool udm_nudr_dr_handle_smf_registration(
         ogs_assert(true ==
             ogs_sbi_server_send_error(stream, recvmsg->res_status,
                 NULL, "HTTP response error", udm_ue->supi,
-                recvmsg->ProblemDetails->cause));
+                (recvmsg->ProblemDetails) ?
+                        recvmsg->ProblemDetails->cause : NULL));
         return false;
     }
 
@@ -808,8 +873,7 @@ bool udm_nudr_dr_handle_smf_registration(
                 return false;
             }
 
-            if (!SmfRegistration->single_nssai ||
-                    !SmfRegistration->single_nssai->sst) {
+            if (!SmfRegistration->single_nssai) {
                 ogs_error("[%s:%d] No singleNssai", udm_ue->supi, sess->psi);
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(
@@ -841,7 +905,8 @@ bool udm_nudr_dr_handle_smf_registration(
             memset(&sendmsg, 0, sizeof(sendmsg));
 
             memset(&header, 0, sizeof(header));
-            header.service.name = (char *)OGS_SBI_SERVICE_NAME_NUDM_UECM;
+            header.service.name =
+                OpenAPI_service_name_ToString(OpenAPI_service_name_nudm_uecm);
             header.api.version = (char *)OGS_SBI_API_V1;
             header.resource.component[0] = udm_ue->supi;
             header.resource.component[1] =

@@ -82,6 +82,7 @@ int bsf_context_parse_config(void)
     int rv;
     yaml_document_t *document = NULL;
     ogs_yaml_iter_t root_iter;
+    int idx = 0;
 
     document = ogs_app()->document;
     ogs_assert(document);
@@ -93,7 +94,8 @@ int bsf_context_parse_config(void)
     while (ogs_yaml_iter_next(&root_iter)) {
         const char *root_key = ogs_yaml_iter_key(&root_iter);
         ogs_assert(root_key);
-        if (!strcmp(root_key, "bsf")) {
+        if ((!strcmp(root_key, "bsf")) &&
+            (idx++ == ogs_app()->config_section_id)) {
             ogs_yaml_iter_t bsf_iter;
             ogs_yaml_iter_recurse(&root_iter, &bsf_iter);
             while (ogs_yaml_iter_next(&bsf_iter)) {
@@ -146,7 +148,12 @@ bsf_sess_t *bsf_sess_add_by_ip_address(
     }
     if (ipv6prefix_string &&
         bsf_sess_set_ipv6prefix(sess, ipv6prefix_string) == false) {
-        ogs_error("bsf_sess_set_ipv6prefix[%s] failed", ipv4addr_string);
+        ogs_error("bsf_sess_set_ipv6prefix[%s] failed", ipv6prefix_string);
+        if (sess->ipv4addr_string) {
+            ogs_hash_set(self.ipv4addr_hash,
+                    &sess->ipv4addr, sizeof(sess->ipv4addr), NULL);
+            ogs_free(sess->ipv4addr_string);
+        }
         ogs_pool_free(&bsf_sess_pool, sess);
         return NULL;
     }
@@ -271,7 +278,10 @@ bool bsf_sess_set_ipv6prefix(bsf_sess_t *sess, char *ipv6prefix_string)
         return false;
     }
 
-    ogs_assert(sess->ipv6prefix.len == OGS_IPV6_128_PREFIX_LEN);
+    if (sess->ipv6prefix.len != OGS_IPV6_128_PREFIX_LEN) {
+        ogs_error("Unsupported IPv6 prefix length [%d]", sess->ipv6prefix.len);
+        return false;
+    }
 
     sess->ipv6prefix_string = ogs_strdup(ipv6prefix_string);
     if (!sess->ipv6prefix_string) {
@@ -311,23 +321,30 @@ bsf_sess_t *bsf_sess_find_by_binding_id(char *binding_id)
     return bsf_sess_find(atoll(binding_id));
 }
 
-bsf_sess_t *bsf_sess_find_by_ipv4addr(char *ipv4addr_string)
+bsf_sess_t *bsf_sess_find_by_ipv4addr(
+        char *ipv4addr_string, bool *invalid)
 {
     uint32_t ipv4addr;
     int rv;
 
     ogs_assert(ipv4addr_string);
 
+    if (invalid)
+        *invalid = false;
+
     rv = ogs_ipv4_from_string(&ipv4addr, ipv4addr_string);
     if (rv != OGS_OK) {
         ogs_error("ogs_ipv4_from_string() failed");
+        if (invalid)
+            *invalid = true;
         return NULL;
     }
 
     return ogs_hash_get(self.ipv4addr_hash, &ipv4addr, sizeof(ipv4addr));
 }
 
-bsf_sess_t *bsf_sess_find_by_ipv6prefix(char *ipv6prefix_string)
+bsf_sess_t *bsf_sess_find_by_ipv6prefix(
+        char *ipv6prefix_string, bool *invalid)
 {
     int rv;
     struct {
@@ -337,11 +354,24 @@ bsf_sess_t *bsf_sess_find_by_ipv6prefix(char *ipv6prefix_string)
 
     ogs_assert(ipv6prefix_string);
 
+    if (invalid)
+        *invalid = false;
+
     rv = ogs_ipv6prefix_from_string(
             ipv6prefix.addr6, &ipv6prefix.len, ipv6prefix_string);
-    ogs_assert(rv == OGS_OK);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_ipv6prefix_from_string() failed");
+        if (invalid)
+            *invalid = true;
+        return NULL;
+    }
 
-    ogs_assert(ipv6prefix.len == OGS_IPV6_128_PREFIX_LEN);
+    if (ipv6prefix.len != OGS_IPV6_128_PREFIX_LEN) {
+        ogs_error("Unsupported IPv6 prefix length [%d]", ipv6prefix.len);
+        if (invalid)
+            *invalid = true;
+        return NULL;
+    }
 
     return ogs_hash_get(self.ipv6prefix_hash,
             &ipv6prefix, (ipv6prefix.len >> 3) + 1);

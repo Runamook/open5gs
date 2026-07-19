@@ -31,7 +31,7 @@ extern "C" {
 #define OGS_MAX_NUM_OF_SESS             4   /* Num of APN(Session) per UE */
 #define OGS_MAX_NUM_OF_BEARER           4   /* Num of Bearer per Session */
 #define OGS_BEARER_PER_UE               8   /* Num of Bearer per UE */
-#define OGS_MAX_NUM_OF_PACKET_BUFFER    64  /* Num of PacketBuffer per UE */
+#define OGS_MAX_NUM_OF_GTPU_BUFFER      64  /* Num of GTPU Buffer per UE */
 
 /*
  * TS24.008
@@ -50,17 +50,29 @@ extern "C" {
  * coded as 0. For all other operations, the number of packet filters
  * shall be greater than 0 and less than or equal to 15.
  *
- * The array of TLV messages is limited to 16.
- * So, Flow(PDI.SDF_Filter) in PDR is limited to 16.
+ * TS24.501
+ * 9.11.4.13 QoS rules
+ * Table 9.11.4.13.1: QoS rules information element
  *
- * Therefore, we defined the maximum number of flows as 16.
+ * For the "delete existing QoS rule" operation and for the "modify existing
+ * QoS rule without modifying packet filters" operation, the number of packet
+ * filters shall be coded as 0. For the "create new QoS rule" operation
+ * and the "modify existing QoS rule and replace all packet filters" operation,
+ * the number of packet filters shall be greater than or equal to 0
+ * and less than or equal to 15. For all other operations, the number of packet
+ * filters shall be greater than 0 and less than or equal to 15.
+ *
+ * The array of TLV messages is limited to 15.
+ * So, Flow(PDI.SDF_Filter) in PDR is limited to 15.
+ *
+ * Therefore, we defined the maximum number of flows as 15.
  */
-#define OGS_MAX_NUM_OF_FLOW_IN_PDR      16
+#define OGS_MAX_NUM_OF_FLOW_IN_PDR      15
 #define OGS_MAX_NUM_OF_FLOW_IN_GTP      OGS_MAX_NUM_OF_FLOW_IN_PDR
 #define OGS_MAX_NUM_OF_FLOW_IN_NAS      OGS_MAX_NUM_OF_FLOW_IN_PDR
 #define OGS_MAX_NUM_OF_FLOW_IN_PCC_RULE OGS_MAX_NUM_OF_FLOW_IN_PDR
 #define OGS_MAX_NUM_OF_FLOW_IN_MEDIA_SUB_COMPONENT OGS_MAX_NUM_OF_FLOW_IN_PDR
-#define OGS_MAX_NUM_OF_FLOW_IN_BEARER   16
+#define OGS_MAX_NUM_OF_FLOW_IN_BEARER   15
 
 #define OGS_MAX_NUM_OF_GTPU_RESOURCE    4
 #define OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDI 8
@@ -137,6 +149,9 @@ extern "C" {
 #define OGS_NAS_PROCEDURE_TRANSACTION_IDENTITY_UNASSIGNED 0
 /* 3GPP TS 24.007 Table 11.2.3.1c.1: */
 #define OGS_NAS_PDU_SESSION_IDENTITY_UNASSIGNED 0
+#define OGS_NAS_PDU_SESSION_IDENTITY_MAX 255
+
+bool ogs_pdu_session_id_is_valid(int psi);
 
 #define OGS_ACCESS_TYPE_3GPP 1
 #define OGS_ACCESS_TYPE_NON_3GPP 2
@@ -181,6 +196,7 @@ extern "C" {
 #define OGS_SESSION_STRING "session"
 #define OGS_NAME_STRING "name"
 #define OGS_TYPE_STRING "type"
+#define OGS_LBO_ROAMING_ALLOWED_STRING "lbo_roaming_allowed"
 #define OGS_QOS_STRING "qos"
 #define OGS_INDEX_STRING "index"
 #define OGS_ARP_STRING "arp"
@@ -230,9 +246,11 @@ char *ogs_plmn_id_to_string(const ogs_plmn_id_t *plmn_id, char *buf);
 
 char *ogs_serving_network_name_from_plmn_id(const ogs_plmn_id_t *plmn_id);
 char *ogs_home_network_domain_from_plmn_id(const ogs_plmn_id_t *plmn_id);
+char *ogs_epc_domain_from_plmn_id(const ogs_plmn_id_t *plmn_id);
 char *ogs_nrf_fqdn_from_plmn_id(const ogs_plmn_id_t *plmn_id);
 char *ogs_nssf_fqdn_from_plmn_id(const ogs_plmn_id_t *plmn_id);
-char *ogs_home_network_domain_from_fqdn(char *fqdn);
+char *ogs_dnn_oi_from_plmn_id(const ogs_plmn_id_t *plmn_id);
+char *ogs_dnn_oi_from_fqdn(char *fqdn);
 uint16_t ogs_plmn_id_mnc_from_fqdn(char *fqdn);
 uint16_t ogs_plmn_id_mcc_from_fqdn(char *fqdn);
 
@@ -293,6 +311,12 @@ ogs_amf_id_t *ogs_amf_id_build(ogs_amf_id_t *amf_id,
 #define OGS_ID_5G_GUTI_TYPE "5g-guti"
 char *ogs_id_get_type(const char *str);
 char *ogs_id_get_value(const char *str);
+bool ogs_id_get_type_value(const char *str, char **type, char **value);
+bool ogs_bcd_string_is_valid(const char *bcd, int max_len);
+bool ogs_imsi_bcd_is_valid(const char *imsi_bcd);
+bool ogs_imeisv_bcd_is_valid(const char *imeisv_bcd);
+int ogs_supi_to_imsi_bcd(
+        const char *supi, char *imsi_bcd, bool *imsi_supi);
 
 /************************************
  * TAI Structure                    */
@@ -418,7 +442,21 @@ ED2(uint8_t spare:5;,
     };
 } __attribute__ ((packed)) ogs_paa_t;
 
-#define MAX_BIT_RATE 10000000000UL
+/*
+ *  Bitrate Upper Bound According to 3GPP Standards
+ *
+ *  EPC (S1AP): 3GPP TS 36.413 §9.2.1.19 Bit Rate
+ *      - Maximum allowed bitrate value specified for EPC
+ *
+ *  5GC (NGAP): 3GPP TS 38.414 §9.3.1.4 Bit Rate
+ *      - Defines larger bitrate ceiling due to 5GC performance model
+ *
+ *  NOTE: These values represent the upper boundary (ceiling) of the encode
+ *        bitrate field in each control-plane protocol.
+ */
+#define OGS_MAX_BITRATE_S1AP    10000000000UL        /* S1AP / EPC */
+#define OGS_MAX_BITRATE_NGAP    4000000000000UL      /* NGAP / 5GC */
+
 
 typedef struct ogs_bitrate_s {
     uint64_t downlink;        /* bits per seconds */
@@ -608,6 +646,8 @@ typedef struct ogs_session_s {
 #define OGS_PDU_SESSION_TYPE_FROM_DIAMETER(x)       ((x)+1)
     uint8_t session_type;
 
+    bool lbo_roaming_allowed; /* true: Allowed, false: Not allowed */
+
 #define OGS_SSC_MODE_1                              1
 #define OGS_SSC_MODE_2                              2
 #define OGS_SSC_MODE_3                              3
@@ -686,7 +726,7 @@ typedef struct ogs_pco_id_s {
     void *data;
 } ogs_pco_id_t;
 
-#define OGS_MAX_NUM_OF_PROTOCOL_OR_CONTAINER_ID    16
+#define OGS_MAX_NUM_OF_PROTOCOL_OR_CONTAINER_ID    32
 typedef struct ogs_pco_s {
 ED3(uint8_t ext:1;,
     uint8_t spare:4;,
@@ -783,9 +823,6 @@ ED6(uint8_t     spare:1;,
 int ogs_sockaddr_to_user_plane_ip_resource_info(
     ogs_sockaddr_t *addr, ogs_sockaddr_t *addr6,
     ogs_user_plane_ip_resource_info_t *info);
-int ogs_user_plane_ip_resource_info_to_sockaddr(
-    ogs_user_plane_ip_resource_info_t *info,
-    ogs_sockaddr_t **addr, ogs_sockaddr_t **addr6);
 
 typedef struct ogs_slice_data_s {
     ogs_s_nssai_t s_nssai;
@@ -942,6 +979,97 @@ typedef struct ogs_media_component_s {
     int                 num_of_sub;
 } ogs_media_component_t;
 
+#define OGS_MAX_NUM_OF_SPT 20
+#define OGS_MAX_NUM_OF_IFC 20
+
+/*
+ * Defines matching mechanism type of SPT
+ */
+typedef enum {
+    OGS_SPT_INVALID_TYPE,
+    OGS_SPT_HAS_METHOD,
+    OGS_SPT_HAS_SESSION_CASE,
+    OGS_SPT_HAS_SIP_HEADER,
+    OGS_SPT_HAS_SDP_LINE,
+    OGS_SPT_HAS_REQUEST_URI,
+} ogs_spt_type_e;
+
+/**************************************************
+ * Service Point Trigger Structure (SPT)         */
+typedef struct ogs_spt_s {
+    /* Matching mechanism type of SPT */
+    ogs_spt_type_e type;
+    /* Indicates if the Service Point Trigger instance is negated */
+    int        condition_negated;
+    /* The SPT group or list of SPT groups assigned to the SPT */
+    int        group;
+    /* The method of the SIP request */
+    const char *method;
+    /* The direction of the SIP request as evaluated by the S-CSCF */
+    int        session_case;
+    /* A header in the SIP request*/
+    const char *header;
+    /* Optionally the value of the header in the SIP request */
+	const char *header_content;
+    /* A SDP line within the body (if any) of a SIP request */
+    const char *sdp_line;
+    /* Optionally the value in the SDP line of a SIP request */
+	const char *sdp_line_content;
+    /* The request-URI of the SIP request */
+    const char *request_uri;
+} ogs_spt_t;
+
+/*
+ * Defines what logical operators should be used between SPTs belonging to
+ * different groups
+ */
+typedef enum {
+    OGS_DISJUNCTIVE_NORMAL_FORMAT,  /* an ORed set of ANDed subsets */
+    OGS_CONJUNCTIVE_NORMAL_FORMAT   /* an ANDed set of ORed subsets */
+} ogs_condition_type_cnf_e;
+
+/**************************************************
+ * Trigger Point Structure
+ * Each TriggerPoint is made up of Service Point Trigger (SPTs) which are
+ * individual rules that are matched or not matched, that are either combined
+ * as logical AND or logical OR statements when evaluated.
+ */
+typedef struct ogs_trigger_point_s {
+    int num_of_spt;
+    ogs_condition_type_cnf_e condition_type_cnf;
+    ogs_spt_t spt[OGS_MAX_NUM_OF_SPT];
+} ogs_trigger_point_t;
+
+/**************************************************
+ * Application Server Structure                  */
+typedef struct ogs_application_server_s {
+    const char *server_name;
+    int        default_handling;
+} ogs_application_server_t;
+
+/**************************************************
+ * IFC Structure
+ * 3GPP TS 29.562
+ */
+typedef struct ogs_ifc_s {
+    /*
+     * The priority of the IFC.
+     * The higher the Priority Number the lower the priority of the Filter
+     * Criteria is
+     */
+    int priority;
+    /*
+     * The conditions that should be checked to find out
+     * if the indicated Application Server should be contacted or not
+     */
+    ogs_trigger_point_t trigger_point;
+    /*
+     * the Application Server which shall be triggered
+     * if the conditions are met
+     */
+    ogs_application_server_t application_server;
+} ogs_ifc_t;
+
 typedef struct ogs_ims_data_s {
     int num_of_msisdn;
     struct {
@@ -953,6 +1081,9 @@ typedef struct ogs_ims_data_s {
 #define OGS_MAX_NUM_OF_MEDIA_COMPONENT 16
     ogs_media_component_t media_component[OGS_MAX_NUM_OF_MEDIA_COMPONENT];
     int num_of_media_component;
+
+    int num_of_ifc;
+    ogs_ifc_t ifc[OGS_MAX_NUM_OF_IFC];
 } ogs_ims_data_t;
 
 void ogs_ims_data_free(ogs_ims_data_t *ims_data);
